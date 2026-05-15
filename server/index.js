@@ -70,6 +70,7 @@ function decryptMessage(msg) {
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
 
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: CLIENT_ORIGIN, methods: ["GET", "POST", "DELETE"] },
@@ -152,10 +153,9 @@ const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
 // ─── Вспомогательные функции БД ────────────────────────────────────────────
-const run = async (sql, params = []) => {
-  const stmt = db.prepare(sql);
-  return stmt.run(...params);
-};
+const run = (sql, params = []) => db.prepare(sql).run(...params);
+const get = (sql, params = []) => db.prepare(sql).get(...params);
+const all = (sql, params = []) => db.prepare(sql).all(...params);
 
 const get = async (sql, params = []) => {
   const stmt = db.prepare(sql);
@@ -326,10 +326,19 @@ async function getOrCreateDirectChat(userA, userB) {
   );
   if (existing) return existing.id;
 
-  const chat = await run("INSERT INTO chats (is_direct) VALUES (1)");
-  await run("INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)", [chat.lastID, sorted[0]]);
-  await run("INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)", [chat.lastID, sorted[1]]);
-  return chat.lastID;
+  const result = run("INSERT INTO chats (is_direct) VALUES (1)");
+  const chatId = result.lastInsertRowid;
+	await run(
+	  "INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)",
+	  [chatId, sorted[0]]
+	);
+
+	await run(
+	  "INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)",
+	  [chatId, sorted[1]]
+	);
+
+	return chatId;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
