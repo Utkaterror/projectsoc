@@ -15,49 +15,63 @@ const compression = require("compression");
 
 const PORT = Number(process.env.PORT) || 3001;
 
-// ─── Секреты из переменных окружения ───────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// ENV CHECK
+// ─────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 const ENCRYPTION_KEY_HEX = process.env.ENCRYPTION_KEY;
 
 if (!JWT_SECRET || !JWT_REFRESH_SECRET) {
-  console.error("FATAL: JWT_SECRET and JWT_REFRESH_SECRET must be set in environment variables.");
-  console.error("Run: cp .env.example .env  and fill in the values.");
+  console.error("JWT secrets missing");
   process.exit(1);
 }
 
-if (!ENCRYPTION_KEY_HEX || ENCRYPTION_KEY_HEX.length !== 64) {
-  console.error("FATAL: ENCRYPTION_KEY must be set as a 64-character hex string (32 bytes).");
-  console.error("Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
+if (
+  !ENCRYPTION_KEY_HEX ||
+  ENCRYPTION_KEY_HEX.length !== 64 ||
+  !/^[0-9a-fA-F]+$/.test(ENCRYPTION_KEY_HEX)
+) {
+  console.error("ENCRYPTION_KEY must be 64 hex chars");
   process.exit(1);
 }
 
 const ENCRYPTION_KEY = Buffer.from(ENCRYPTION_KEY_HEX, "hex");
 const ALGORITHM = "aes-256-gcm";
 
-// ─── Шифрование / дешифрование ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// ENCRYPT / DECRYPT
+// ─────────────────────────────────────────────────────────────
 function encrypt(text) {
   if (!text) return text;
-  const iv = crypto.randomBytes(12); // 96-bit IV для GCM
+
+  const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-  const encrypted = Buffer.concat([cipher.update(String(text), "utf8"), cipher.final()]);
+
+  const encrypted = Buffer.concat([
+    cipher.update(String(text), "utf8"),
+    cipher.final(),
+  ]);
+
   const tag = cipher.getAuthTag();
-  // Формат: iv(12) + tag(16) + encrypted — всё в hex
+
   return Buffer.concat([iv, tag, encrypted]).toString("hex");
 }
 
 function decrypt(hex) {
   if (!hex) return hex;
+
   try {
     const buf = Buffer.from(hex, "hex");
     const iv = buf.subarray(0, 12);
     const tag = buf.subarray(12, 28);
-    const encrypted = buf.subarray(28);
+    const data = buf.subarray(28);
+
     const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
     decipher.setAuthTag(tag);
-    return decipher.update(encrypted) + decipher.final("utf8");
+
+    return decipher.update(data, null, "utf8") + decipher.final("utf8");
   } catch {
-    // Если не удалось расшифровать — вернуть как есть (старые незашифрованные сообщения)
     return hex;
   }
 }
@@ -67,183 +81,202 @@ function decryptMessage(msg) {
   return { ...msg, content: decrypt(msg.content) };
 }
 
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
+// ─────────────────────────────────────────────────────────────
+// APP INIT
+// ─────────────────────────────────────────────────────────────
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", true);
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: CLIENT_ORIGIN, methods: ["GET", "POST", "DELETE"] },
 });
 
-// ─── Безопасные HTTP-заголовки ──────────────────────────────────────────────
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // разрешаем отдачу файлов
-}));
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(compression());
-
 app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json({ limit: "1mb" }));
 
-// ─── Rate limiting ──────────────────────────────────────────────────────────
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 30,                   // не более 30 попыток авторизации
-  message: { error: "Too many requests, try again later" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+// ─────────────────────────────────────────────────────────────
+// RATE LIMIT
+// ─────────────────────────────────────────────────────────────
+app.use(
+  "/api/auth",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+  })
+);
 
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 600, // 600 запросов в минуту
-  message: { error: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+app.use(
+  "/api",
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 600,
+  })
+);
 
-app.use("/api/auth", authLimiter);
-app.use("/api", apiLimiter);
-
-// ─── БД и загрузки ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// FILE STORAGE
+// ─────────────────────────────────────────────────────────────
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-// ─── Multer: загрузка изображений ──────────────────────────────────────────
+// safe delete helper
+function safeUnlink(file) {
+  try {
+    fs.unlinkSync(path.join(UPLOADS_DIR, file));
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────
+// MULTER
+// ─────────────────────────────────────────────────────────────
 const imageUpload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-    filename: (_req, file, cb) => {
-      const safeExt = path.extname(file.originalname || "").toLowerCase() || ".jpg";
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${safeExt}`);
+    destination: (_r, _f, cb) => cb(null, UPLOADS_DIR),
+    filename: (_r, file, cb) => {
+      const ext = path.extname(file.originalname || "") || ".jpg";
+      cb(null, Date.now() + "-" + Math.random().toString(36) + ext);
     },
   }),
   limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (!file.mimetype?.startsWith("image/")) return cb(new Error("Only image files allowed"));
-    return cb(null, true);
-  },
 });
 
-// ─── Multer: загрузка аудио ─────────────────────────────────────────────────
 const audioUpload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-    filename: (_req, file, cb) => {
-      const safeExt = path.extname(file.originalname || "").toLowerCase() || ".webm";
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${safeExt}`);
+    destination: (_r, _f, cb) => cb(null, UPLOADS_DIR),
+    filename: (_r, file, cb) => {
+      const ext = path.extname(file.originalname || "") || ".webm";
+      cb(null, Date.now() + "-" + Math.random().toString(36) + ext);
     },
   }),
   limits: { fileSize: 20 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (!file.mimetype?.startsWith("audio/")) return cb(new Error("Only audio files allowed"));
-    return cb(null, true);
-  },
 });
 
-// ─── Вспомогательные функции БД ────────────────────────────────────────────
-const DATA_DIR = path.join(__dirname, "data");
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const DB_PATH = path.join(DATA_DIR, "messenger.db");
+// ─────────────────────────────────────────────────────────────
+// DATABASE
+// ─────────────────────────────────────────────────────────────
+const DB_PATH = path.join(__dirname, "data", "messenger.db");
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
-
 db.pragma("journal_mode = WAL");
 
-// ─── Вспомогательные функции БД ────────────────────────────────────────────
+// sync wrappers (ВАЖНО: better-sqlite3 sync only)
 const run = (sql, params = []) => db.prepare(sql).run(...params);
 const get = (sql, params = []) => db.prepare(sql).get(...params);
 const all = (sql, params = []) => db.prepare(sql).all(...params);
 
-const get = async (sql, params = []) => {
-  const stmt = db.prepare(sql);
-  return stmt.get(...params);
-};
+// FIXED PRAGMA SAFE
+function tableInfo(table) {
+  return db.prepare(`PRAGMA table_info(${table})`).all();
+}
 
-const all = async (sql, params = []) => {
-  const stmt = db.prepare(sql);
-  return stmt.all(...params);
-};
+function ensureColumnExists(table, column, def) {
+  const cols = tableInfo(table);
+  if (!cols.find((c) => c.name === column)) {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`).run();
+  }
+}
 
+// ─────────────────────────────────────────────────────────────
+// ONLINE USERS
+// ─────────────────────────────────────────────────────────────
 const onlineUsers = new Map();
 
-// ─── Валидация ──────────────────────────────────────────────────────────────
-function validateLogin(login) {
-  return typeof login === "string" && login.length >= 3 && login.length <= 32 && /^[a-zA-Z0-9_]+$/.test(login);
+// ─────────────────────────────────────────────────────────────
+// AUTH HELPERS
+// ─────────────────────────────────────────────────────────────
+function generateAccessToken(user) {
+  return jwt.sign(
+    { id: user.id, login: user.login },
+    JWT_SECRET,
+    { expiresIn: "15m" }
+  );
 }
 
-function validatePassword(password) {
-  return typeof password === "string" && password.length >= 6 && password.length <= 128;
-}
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ error: "No token" });
 
-// ─── Работа с файлами сообщений ────────────────────────────────────────────
-async function ensureColumnExists(tableName, columnName, definition) {
-  const columns = await all(`PRAGMA table_info(${tableName})`);
-  const exists = columns.some((column) => column.name === columnName);
-  if (!exists) {
-    await run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  const token = header.replace("Bearer ", "");
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
   }
 }
 
-async function removeMessageFile(message) {
-  const files = [];
-  if (message?.image_path) files.push(message.image_path);
-  if (message?.audio_path) files.push(message.audio_path);
+// ─────────────────────────────────────────────────────────────
+// SOCKET BASIC
+// ─────────────────────────────────────────────────────────────
+io.on("connection", (socket) => {
+  const userId = socket.user?.id;
+  if (!userId) return;
 
-  for (const file of files) {
-    const absoluteFilePath = path.join(UPLOADS_DIR, file);
-    try {
-      await fs.promises.unlink(absoluteFilePath);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+  if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
+  onlineUsers.get(userId).add(socket.id);
+
+  socket.on("disconnect", () => {
+    const set = onlineUsers.get(userId);
+    if (!set) return;
+
+    set.delete(socket.id);
+    if (set.size === 0) {
+      onlineUsers.delete(userId);
+      run("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", [userId]);
     }
-  }
-}
-
-// ─── Инициализация БД ──────────────────────────────────────────────────────
-async function initDb() {
-  await run(`CREATE TABLE IF NOT EXISTS users (
+  });
+});
+//////////////////////////////
+// DB INIT
+//////////////////////////////
+function initDb() {
+  run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     login TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     last_seen TEXT
   )`);
 
-  // Таблица refresh-токенов
-  await run(`CREATE TABLE IF NOT EXISTS refresh_tokens (
+  run(`CREATE TABLE IF NOT EXISTS refresh_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     token_hash TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`);
 
-  await run(`CREATE TABLE IF NOT EXISTS friend_requests (
+  run(`CREATE TABLE IF NOT EXISTS friend_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_user_id INTEGER NOT NULL,
     to_user_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'pending',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(from_user_id, to_user_id)
   )`);
 
-  await run(`CREATE TABLE IF NOT EXISTS friendships (
+  run(`CREATE TABLE IF NOT EXISTS friendships (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user1_id INTEGER NOT NULL,
     user2_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user1_id, user2_id)
   )`);
 
-  await run(`CREATE TABLE IF NOT EXISTS chats (
+  run(`CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    is_direct INTEGER NOT NULL DEFAULT 1
+    is_direct INTEGER DEFAULT 1
   )`);
 
-  await run(`CREATE TABLE IF NOT EXISTS chat_participants (
+  run(`CREATE TABLE IF NOT EXISTS chat_participants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -251,635 +284,624 @@ async function initDb() {
     UNIQUE(chat_id, user_id)
   )`);
 
-  await run(`CREATE TABLE IF NOT EXISTS messages (
+  run(`CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
     sender_id INTEGER NOT NULL,
     content TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_for_everyone INTEGER NOT NULL DEFAULT 0
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    deleted_for_everyone INTEGER DEFAULT 0
   )`);
 
-  await ensureColumnExists("messages", "message_type", "TEXT NOT NULL DEFAULT 'text'");
-  await ensureColumnExists("messages", "image_path", "TEXT");
-  await ensureColumnExists("messages", "audio_path", "TEXT");
-
-  await run(`CREATE TABLE IF NOT EXISTS message_deletions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    UNIQUE(message_id, user_id)
-  )`);
-
-  // Индексы для ускорения запросов
-  await run("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_messages_chat_id_id ON messages(chat_id, id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_message_deletions_message_id ON message_deletions(message_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_chat_participants_user_id ON chat_participants(user_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id ON chat_participants(chat_id)");
-  await run("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)");
-
-  // Удаляем просроченные refresh-токены при старте
-  await run("DELETE FROM refresh_tokens WHERE expires_at < CURRENT_TIMESTAMP");
+  ensureColumnExists("messages", "message_type", "TEXT DEFAULT 'text'");
+  ensureColumnExists("messages", "image_path", "TEXT");
+  ensureColumnExists("messages", "audio_path", "TEXT");
 }
 
-// ─── JWT: генерация токенов ─────────────────────────────────────────────────
-function generateAccessToken(user) {
-  return jwt.sign({ id: user.id, login: user.login }, JWT_SECRET, { expiresIn: "15m" });
-}
+//////////////////////////////
+// JWT TOKENS
+//////////////////////////////
+function generateRefreshToken(userId) {
+  const token = jwt.sign({ id: userId }, JWT_REFRESH_SECRET, {
+    expiresIn: "30d",
+  });
 
-async function generateRefreshToken(userId) {
-  const token = jwt.sign({ id: userId }, JWT_REFRESH_SECRET, { expiresIn: "30d" });
-  // Храним хэш токена в БД (не сам токен)
-  const tokenHash = await bcrypt.hash(token, 8);
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  await run(
+  const hash = bcrypt.hashSync(token, 8);
+  const expires = new Date(Date.now() + 30 * 86400000).toISOString();
+
+  run(
     "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
-    [userId, tokenHash, expiresAt]
+    [userId, hash, expires]
   );
+
   return token;
 }
 
-// ─── Middleware: проверка access-токена ────────────────────────────────────
-function authMiddleware(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: "No token" });
-  const token = header.replace("Bearer ", "");
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch (error) {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
-}
+//////////////////////////////
+// AUTH ROUTES
+//////////////////////////////
 
-// ─── Вспомогательная функция чатов ─────────────────────────────────────────
-async function getOrCreateDirectChat(userA, userB) {
-  const sorted = [userA, userB].sort((a, b) => a - b);
-  const existing = await get(
-    `SELECT c.id FROM chats c
-     JOIN chat_participants p1 ON p1.chat_id = c.id AND p1.user_id = ?
-     JOIN chat_participants p2 ON p2.chat_id = c.id AND p2.user_id = ?
-     WHERE c.is_direct = 1`,
-    sorted
-  );
-  if (existing) return existing.id;
-
-  const result = run("INSERT INTO chats (is_direct) VALUES (1)");
-  const chatId = result.lastInsertRowid;
-	await run(
-	  "INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)",
-	  [chatId, sorted[0]]
-	);
-
-	await run(
-	  "INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)",
-	  [chatId, sorted[1]]
-	);
-
-	return chatId;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// МАРШРУТЫ
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ─── Регистрация ────────────────────────────────────────────────────────────
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { login, password } = req.body;
 
-    if (!validateLogin(login)) {
-      return res.status(400).json({ error: "Login must be 3–32 characters, letters/numbers/underscore only" });
-    }
-    if (!validatePassword(password)) {
-      return res.status(400).json({ error: "Password must be 6–128 characters" });
-    }
+    if (!login || login.length < 3)
+      return res.status(400).json({ error: "Invalid login" });
+
+    if (!password || password.length < 6)
+      return res.status(400).json({ error: "Invalid password" });
 
     const hash = await bcrypt.hash(password, 12);
-    const result = await run("INSERT INTO users (login, password_hash) VALUES (?, ?)", [login, hash]);
 
-    const user = { id: result.lastID, login };
+    const result = run(
+      "INSERT INTO users (login, password_hash) VALUES (?, ?)",
+      [login, hash]
+    );
+
+    const user = { id: result.lastInsertRowid, login };
+
     const accessToken = generateAccessToken(user);
-    const refreshToken = await generateRefreshToken(user.id);
+    const refreshToken = generateRefreshToken(user.id);
 
-    return res.json({ accessToken, refreshToken, user });
-  } catch (error) {
-    if (String(error.message).includes("UNIQUE")) {
-      return res.status(400).json({ error: "Login already exists" });
+    res.json({ accessToken, refreshToken, user });
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) {
+      return res.status(400).json({ error: "Login exists" });
     }
-    return res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ─── Вход ───────────────────────────────────────────────────────────────────
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { login, password } = req.body;
 
-    if (!login || !password) {
-      return res.status(400).json({ error: "Login and password are required" });
-    }
+    const user = get("SELECT * FROM users WHERE login = ?", [login]);
 
-    const user = await get("SELECT * FROM users WHERE login = ?", [login]);
-    // Одинаковое сообщение — не раскрываем существование пользователя
     if (!user) {
-      await bcrypt.hash(password, 12); // timing attack protection
       return res.status(400).json({ error: "Invalid credentials" });
     }
 
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) return res.status(400).json({ error: "Invalid credentials" });
+    const ok = await bcrypt.compare(password, user.password_hash);
+
+    if (!ok) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
 
     const accessToken = generateAccessToken(user);
-    const refreshToken = await generateRefreshToken(user.id);
+    const refreshToken = generateRefreshToken(user.id);
 
-    return res.json({ accessToken, refreshToken, user: { id: user.id, login: user.login } });
-  } catch (error) {
-    return res.status(500).json({ error: "Server error" });
+    res.json({
+      accessToken,
+      refreshToken,
+      user: { id: user.id, login: user.login },
+    });
+  } catch {
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ─── Обновление access-токена через refresh-токен ──────────────────────────
-app.post("/api/auth/refresh", async (req, res) => {
+app.post("/api/auth/refresh", (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken)
+    return res.status(400).json({ error: "No refresh token" });
+
   try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) return res.status(400).json({ error: "Refresh token required" });
+    const payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
 
-    let payload;
-    try {
-      payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-    } catch {
-      return res.status(401).json({ error: "Invalid or expired refresh token" });
-    }
-
-    // Проверяем токен в БД
-    const storedTokens = await all(
-      "SELECT * FROM refresh_tokens WHERE user_id = ? AND expires_at > CURRENT_TIMESTAMP",
+    const rows = all(
+      "SELECT * FROM refresh_tokens WHERE user_id = ?",
       [payload.id]
     );
 
-    let validRecord = null;
-    for (const record of storedTokens) {
-      const match = await bcrypt.compare(refreshToken, record.token_hash);
-      if (match) { validRecord = record; break; }
-    }
+    let valid = null;
 
-    if (!validRecord) return res.status(401).json({ error: "Refresh token not found or revoked" });
-
-    // Ротация: удаляем старый, выдаём новые
-    await run("DELETE FROM refresh_tokens WHERE id = ?", [validRecord.id]);
-
-    const user = await get("SELECT id, login FROM users WHERE id = ?", [payload.id]);
-    if (!user) return res.status(401).json({ error: "User not found" });
-
-    const newAccessToken = generateAccessToken(user);
-    const newRefreshToken = await generateRefreshToken(user.id);
-
-    return res.json({ accessToken: newAccessToken, refreshToken: newRefreshToken });
-  } catch (error) {
-    return res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ─── Выход (инвалидация refresh-токена) ────────────────────────────────────
-app.post("/api/auth/logout", authMiddleware, async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-    if (refreshToken) {
-      const storedTokens = await all(
-        "SELECT * FROM refresh_tokens WHERE user_id = ?",
-        [req.user.id]
-      );
-      for (const record of storedTokens) {
-        const match = await bcrypt.compare(refreshToken, record.token_hash);
-        if (match) {
-          await run("DELETE FROM refresh_tokens WHERE id = ?", [record.id]);
-          break;
-        }
+    for (const r of rows) {
+      if (bcrypt.compareSync(refreshToken, r.token_hash)) {
+        valid = r;
+        break;
       }
     }
-    return res.json({ ok: true });
+
+    if (!valid)
+      return res.status(401).json({ error: "Invalid refresh token" });
+
+    run("DELETE FROM refresh_tokens WHERE id = ?", [valid.id]);
+
+    const user = get("SELECT id, login FROM users WHERE id = ?", [
+      payload.id,
+    ]);
+
+    const newAccess = generateAccessToken(user);
+    const newRefresh = generateRefreshToken(user.id);
+
+    res.json({ accessToken: newAccess, refreshToken: newRefresh });
   } catch {
-    return res.status(500).json({ error: "Server error" });
+    res.status(401).json({ error: "Invalid token" });
   }
 });
 
-// ─── Удаление аккаунта ──────────────────────────────────────────────────────
-app.delete("/api/auth/account", authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.id;
+app.post("/api/auth/logout", authMiddleware, (req, res) => {
+  const { refreshToken } = req.body;
 
-    // Находим все чаты пользователя
-    const userChats = await all(
-      "SELECT chat_id FROM chat_participants WHERE user_id = ?",
-      [userId]
+  if (refreshToken) {
+    const rows = all(
+      "SELECT * FROM refresh_tokens WHERE user_id = ?",
+      [req.user.id]
     );
 
-    for (const { chat_id } of userChats) {
-      // Проверяем есть ли другие участники кроме удаляемого
-      const otherParticipants = await all(
-        "SELECT user_id FROM chat_participants WHERE chat_id = ? AND user_id != ?",
-        [chat_id, userId]
-      );
-
-      if (otherParticipants.length === 0) {
-        // Чат только у этого пользователя — удаляем полностью
-        const messages = await all("SELECT * FROM messages WHERE chat_id = ?", [chat_id]);
-        for (const message of messages) await removeMessageFile(message);
-        await run("DELETE FROM message_deletions WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ?)", [chat_id]);
-        await run("DELETE FROM messages WHERE chat_id = ?", [chat_id]);
-        await run("DELETE FROM chat_participants WHERE chat_id = ?", [chat_id]);
-        await run("DELETE FROM chats WHERE id = ?", [chat_id]);
-      } else {
-        // В чате есть другой участник — удаляем только сообщения этого пользователя
-        // и помечаем их удалёнными для всех
-        const userMessages = await all(
-          "SELECT * FROM messages WHERE chat_id = ? AND sender_id = ?",
-          [chat_id, userId]
-        );
-        for (const message of userMessages) {
-          await removeMessageFile(message);
-          io.to(`chat:${chat_id}`).emit("message:deleted_for_all", { messageId: message.id });
-        }
-        await run(
-          "DELETE FROM message_deletions WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ? AND sender_id = ?)",
-          [chat_id, userId]
-        );
-        await run("DELETE FROM messages WHERE chat_id = ? AND sender_id = ?", [chat_id, userId]);
-        await run("DELETE FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chat_id, userId]);
-
-        // Оповещаем собеседника
-        io.to(`chat:${chat_id}`).emit("chat:cleared", { chatId: chat_id });
+    for (const r of rows) {
+      if (bcrypt.compareSync(refreshToken, r.token_hash)) {
+        run("DELETE FROM refresh_tokens WHERE id = ?", [r.id]);
+        break;
       }
     }
-
-    // Удаляем дружбы и заявки
-    await run(
-      "DELETE FROM friendships WHERE user1_id = ? OR user2_id = ?",
-      [userId, userId]
-    );
-    await run(
-      "DELETE FROM friend_requests WHERE from_user_id = ? OR to_user_id = ?",
-      [userId, userId]
-    );
-
-    // Удаляем refresh-токены
-    await run("DELETE FROM refresh_tokens WHERE user_id = ?", [userId]);
-
-    // Удаляем самого пользователя
-    await run("DELETE FROM users WHERE id = ?", [userId]);
-
-    return res.json({ ok: true });
-  } catch (error) {
-    console.error("Delete account error:", error);
-    return res.status(500).json({ error: "Server error" });
   }
+
+  res.json({ ok: true });
 });
 
-// ─── Друзья ─────────────────────────────────────────────────────────────────
-app.get("/api/friends/search", authMiddleware, async (req, res) => {
+//////////////////////////////
+// FRIEND SYSTEM
+//////////////////////////////
+
+app.get("/api/friends/search", authMiddleware, (req, res) => {
   const { login } = req.query;
+
   if (!login) return res.json({ user: null });
-  const user = await get("SELECT id, login FROM users WHERE login = ?", [login]);
-  if (!user || user.id === req.user.id) return res.json({ user: null });
 
-  const friendship = await get(
-    "SELECT id FROM friendships WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)",
+  const user = get("SELECT id, login FROM users WHERE login = ?", [login]);
+
+  if (!user || user.id === req.user.id)
+    return res.json({ user: null });
+
+  const friendship = get(
+    `SELECT * FROM friendships 
+     WHERE (user1_id = ? AND user2_id = ?) 
+        OR (user1_id = ? AND user2_id = ?)`,
     [req.user.id, user.id, user.id, req.user.id]
   );
-  if (friendship) return res.json({ user, relationship: "friend" });
 
-  const pending = await get(
-    `SELECT id, from_user_id, to_user_id FROM friend_requests
-     WHERE status = 'pending'
-       AND ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))`,
+  if (friendship)
+    return res.json({ user, relationship: "friend" });
+
+  const reqRow = get(
+    `SELECT * FROM friend_requests
+     WHERE status='pending'
+     AND ((from_user_id=? AND to_user_id=?) OR (from_user_id=? AND to_user_id=?))`,
     [req.user.id, user.id, user.id, req.user.id]
   );
-  if (pending) {
+
+  if (reqRow) {
     return res.json({
       user,
-      relationship: pending.from_user_id === req.user.id ? "outgoing_pending" : "incoming_pending",
+      relationship:
+        reqRow.from_user_id === req.user.id
+          ? "outgoing_pending"
+          : "incoming_pending",
     });
   }
-  return res.json({ user, relationship: "none" });
+
+  res.json({ user, relationship: "none" });
 });
 
-app.post("/api/friends/request/:targetId", authMiddleware, async (req, res) => {
-  const targetId = Number(req.params.targetId);
-  if (!targetId || targetId === req.user.id) return res.status(400).json({ error: "Invalid target" });
+app.post("/api/friends/request/:id", authMiddleware, (req, res) => {
+  const target = Number(req.params.id);
 
-  const existingFriend = await get(
-    "SELECT * FROM friendships WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)",
-    [req.user.id, targetId, targetId, req.user.id]
+  if (!target || target === req.user.id)
+    return res.status(400).json({ error: "Invalid" });
+
+  run(
+    "INSERT OR IGNORE INTO friend_requests (from_user_id,to_user_id) VALUES (?,?)",
+    [req.user.id, target]
   );
-  if (existingFriend) return res.status(400).json({ error: "Already friends" });
 
-  const existingPending = await get(
-    `SELECT id FROM friend_requests
-     WHERE status = 'pending'
-       AND ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))`,
-    [req.user.id, targetId, targetId, req.user.id]
-  );
-  if (existingPending) return res.status(400).json({ error: "Request already exists" });
-
-  try {
-    await run("INSERT INTO friend_requests (from_user_id, to_user_id) VALUES (?, ?)", [req.user.id, targetId]);
-    return res.json({ ok: true });
-  } catch (error) {
-    return res.status(400).json({ error: "Request already exists" });
-  }
+  res.json({ ok: true });
 });
 
-app.get("/api/friends/requests", authMiddleware, async (req, res) => {
-  const rows = await all(
-    `SELECT fr.id, fr.from_user_id, u.login as from_login
-     FROM friend_requests fr
-     JOIN users u ON u.id = fr.from_user_id
-     WHERE fr.to_user_id = ? AND fr.status = 'pending'
-     ORDER BY fr.created_at DESC`,
-    [req.user.id]
-  );
-  return res.json({ requests: rows });
-});
-
-app.post("/api/friends/request/:requestId/respond", authMiddleware, async (req, res) => {
-  const requestId = Number(req.params.requestId);
+app.post("/api/friends/respond/:id", authMiddleware, (req, res) => {
+  const id = Number(req.params.id);
   const { action } = req.body;
-  const request = await get("SELECT * FROM friend_requests WHERE id = ? AND to_user_id = ?", [requestId, req.user.id]);
-  if (!request || request.status !== "pending") return res.status(404).json({ error: "Request not found" });
+
+  const fr = get(
+    "SELECT * FROM friend_requests WHERE id=? AND to_user_id=?",
+    [id, req.user.id]
+  );
+
+  if (!fr) return res.status(404).json({ error: "Not found" });
 
   if (action === "accept") {
-    const [a, b] = [request.from_user_id, request.to_user_id].sort((x, y) => x - y);
-    await run("INSERT OR IGNORE INTO friendships (user1_id, user2_id) VALUES (?, ?)", [a, b]);
-    await getOrCreateDirectChat(a, b);
-    await run("UPDATE friend_requests SET status = 'accepted' WHERE id = ?", [requestId]);
+    const [a, b] = [fr.from_user_id, fr.to_user_id].sort((x, y) => x - y);
+
+    run(
+      "INSERT OR IGNORE INTO friendships (user1_id,user2_id) VALUES (?,?)",
+      [a, b]
+    );
+
+    const chat = db.prepare(
+      "INSERT INTO chats (is_direct) VALUES (1)"
+    ).run();
+
+    run(
+      "INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)",
+      [chat.lastInsertRowid, a]
+    );
+
+    run(
+      "INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)",
+      [chat.lastInsertRowid, b]
+    );
+
+    run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
   } else {
-    await run("UPDATE friend_requests SET status = 'rejected' WHERE id = ?", [requestId]);
+    run("UPDATE friend_requests SET status='rejected' WHERE id=?", [id]);
   }
-  return res.json({ ok: true });
+
+  res.json({ ok: true });
 });
 
-app.get("/api/friends", authMiddleware, async (req, res) => {
-  const friends = await all(
-    `SELECT u.id, u.login
+app.get("/api/friends", authMiddleware, (req, res) => {
+  const rows = all(
+    `SELECT u.id,u.login
      FROM friendships f
-     JOIN users u ON u.id = CASE WHEN f.user1_id = ? THEN f.user2_id ELSE f.user1_id END
-     WHERE f.user1_id = ? OR f.user2_id = ?`,
+     JOIN users u
+     ON u.id = CASE WHEN f.user1_id=? THEN f.user2_id ELSE f.user1_id END
+     WHERE f.user1_id=? OR f.user2_id=?`,
     [req.user.id, req.user.id, req.user.id]
   );
-  return res.json({
-    friends: friends.map((f) => ({
-      ...f,
-      online: onlineUsers.has(f.id),
+
+  res.json({
+    friends: rows.map((u) => ({
+      ...u,
+      online: onlineUsers.has(u.id),
     })),
   });
 });
+//////////////////////////////
+// CHAT HELPERS
+//////////////////////////////
+function getOrCreateDirectChat(a, b) {
+  const sorted = [a, b].sort((x, y) => x - y);
 
-// ─── Чаты ───────────────────────────────────────────────────────────────────
-app.get("/api/chats", authMiddleware, async (req, res) => {
-  const chats = await all(
-    `SELECT c.id as chat_id, u.id as friend_id, u.login as friend_login, cp.last_read_message_id
+  const existing = get(
+    `SELECT c.id FROM chats c
+     JOIN chat_participants p1 ON p1.chat_id=c.id AND p1.user_id=?
+     JOIN chat_participants p2 ON p2.chat_id=c.id AND p2.user_id=?
+     WHERE c.is_direct=1`,
+    sorted
+  );
+
+  if (existing) return existing.id;
+
+  const chat = db.prepare("INSERT INTO chats (is_direct) VALUES (1)").run();
+
+  run(
+    "INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)",
+    [chat.lastInsertRowid, sorted[0]]
+  );
+
+  run(
+    "INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)",
+    [chat.lastInsertRowid, sorted[1]]
+  );
+
+  return chat.lastInsertRowid;
+}
+
+//////////////////////////////
+// CHAT LIST
+//////////////////////////////
+app.get("/api/chats", authMiddleware, (req, res) => {
+  const chats = all(
+    `SELECT c.id as chat_id, u.id as friend_id, u.login as friend_login
      FROM chats c
-     JOIN chat_participants me ON me.chat_id = c.id AND me.user_id = ?
-     JOIN chat_participants other ON other.chat_id = c.id AND other.user_id != ?
-     JOIN users u ON u.id = other.user_id
-     JOIN chat_participants cp ON cp.chat_id = c.id AND cp.user_id = ?
-     WHERE c.is_direct = 1`,
-    [req.user.id, req.user.id, req.user.id]
+     JOIN chat_participants me ON me.chat_id=c.id AND me.user_id=?
+     JOIN chat_participants other ON other.chat_id=c.id AND other.user_id!=?
+     JOIN users u ON u.id=other.user_id
+     WHERE c.is_direct=1`,
+    [req.user.id, req.user.id]
   );
 
-  const mapped = await Promise.all(
-    chats.map(async (chat) => {
-      const lastMessage = await get(
-        `SELECT m.id, m.content, m.sender_id, m.deleted_for_everyone, m.created_at, m.message_type, m.image_path, m.audio_path
-         FROM messages m
-         LEFT JOIN message_deletions md ON md.message_id = m.id AND md.user_id = ?
-         WHERE m.chat_id = ? AND md.id IS NULL
-         ORDER BY m.id DESC LIMIT 1`,
-        [req.user.id, chat.chat_id]
-      );
-      return {
-        chatId: chat.chat_id,
-        friend: { id: chat.friend_id, login: chat.friend_login, online: onlineUsers.has(chat.friend_id) },
-        lastReadMessageId: chat.last_read_message_id,
-        lastMessage: decryptMessage(lastMessage),
-      };
-    })
-  );
-  return res.json({ chats: mapped });
+  const result = chats.map((c) => {
+    const last = get(
+      `SELECT * FROM messages
+       WHERE chat_id=?
+       ORDER BY id DESC LIMIT 1`,
+      [c.chat_id]
+    );
+
+    return {
+      chatId: c.chat_id,
+      friend: {
+        id: c.friend_id,
+        login: c.friend_login,
+        online: onlineUsers.has(c.friend_id),
+      },
+      lastMessage: decryptMessage(last),
+    };
+  });
+
+  res.json({ chats: result });
 });
 
-app.get("/api/chats/:chatId/messages", authMiddleware, async (req, res) => {
-  const chatId = Number(req.params.chatId);
-  const limit = Math.min(Number(req.query.limit) || 50, 100);
-  const before = Number(req.query.before) || null; // ID сообщения — грузим ДО него
+//////////////////////////////
+// MESSAGES
+//////////////////////////////
+app.get("/api/chats/:id/messages", authMiddleware, (req, res) => {
+  const chatId = Number(req.params.id);
+  const limit = Math.min(Number(req.query.limit || 50), 100);
 
-  const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chatId, req.user.id]);
-  if (!participant) return res.status(403).json({ error: "Forbidden" });
+  const member = get(
+    "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+    [chatId, req.user.id]
+  );
 
-  const rows = await all(
-    `SELECT m.id, m.chat_id, m.sender_id, m.content, m.created_at, m.deleted_for_everyone, m.message_type, m.image_path, m.audio_path
-     FROM messages m
-     LEFT JOIN message_deletions md ON md.message_id = m.id AND md.user_id = ?
-     WHERE m.chat_id = ? AND md.id IS NULL ${before ? "AND m.id < ?" : ""}
-     ORDER BY m.id DESC
+  if (!member) return res.status(403).json({ error: "Forbidden" });
+
+  const rows = all(
+    `SELECT * FROM messages
+     WHERE chat_id=?
+     ORDER BY id DESC
      LIMIT ?`,
-    before ? [req.user.id, chatId, before, limit] : [req.user.id, chatId, limit]
+    [chatId, limit]
   );
 
-  // Разворачиваем обратно — от старых к новым
-  const messages = rows.reverse();
-  const hasMore = rows.length === limit;
-
-  return res.json({ messages: messages.map(decryptMessage), hasMore });
+  res.json({
+    messages: rows.reverse().map(decryptMessage),
+  });
 });
 
-// ─── Загрузка изображений ───────────────────────────────────────────────────
-app.post("/api/chats/:chatId/images", authMiddleware, imageUpload.single("image"), async (req, res) => {
-  try {
-    const chatId = Number(req.params.chatId);
-    const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chatId, req.user.id]);
-    if (!participant) return res.status(403).json({ error: "Forbidden" });
-    if (!req.file) return res.status(400).json({ error: "Image is required" });
+//////////////////////////////
+// IMAGE UPLOAD
+//////////////////////////////
+app.post(
+  "/api/chats/:id/image",
+  authMiddleware,
+  imageUpload.single("image"),
+  (req, res) => {
+    const chatId = Number(req.params.id);
 
-    const result = await run(
-      "INSERT INTO messages (chat_id, sender_id, content, message_type, image_path) VALUES (?, ?, ?, 'image', ?)",
-      [chatId, req.user.id, encrypt(req.file.originalname || "Фото"), req.file.filename]
+    const member = get(
+      "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+      [chatId, req.user.id]
     );
-    const message = await get("SELECT * FROM messages WHERE id = ?", [result.lastID]);
-    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(message));
-    return res.json({ ok: true, message: decryptMessage(message) });
-  } catch (error) {
-    if (req.file?.path) {
-      try { await fs.promises.unlink(req.file.path); } catch (_) {}
-    }
-    return res.status(400).json({ error: error.message || "Failed to upload image" });
-  }
-});
 
-// ─── Загрузка аудио ─────────────────────────────────────────────────────────
-app.post("/api/chats/:chatId/voice", authMiddleware, audioUpload.single("audio"), async (req, res) => {
-  try {
-    const chatId = Number(req.params.chatId);
-    const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chatId, req.user.id]);
-    if (!participant) return res.status(403).json({ error: "Forbidden" });
-    if (!req.file) return res.status(400).json({ error: "Audio is required" });
+    if (!member) return res.status(403).json({ error: "Forbidden" });
+    if (!req.file) return res.status(400).json({ error: "No file" });
 
-    const result = await run(
-      "INSERT INTO messages (chat_id, sender_id, content, message_type, audio_path) VALUES (?, ?, ?, 'voice', ?)",
-      [chatId, req.user.id, encrypt("Голосовое сообщение"), req.file.filename]
+    const r = run(
+      `INSERT INTO messages (chat_id,sender_id,content,message_type,image_path)
+       VALUES (?,?,?,?,?)`,
+      [
+        chatId,
+        req.user.id,
+        encrypt(req.file.originalname || "image"),
+        "image",
+        req.file.filename,
+      ]
     );
-    const message = await get("SELECT * FROM messages WHERE id = ?", [result.lastID]);
-    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(message));
-    return res.json({ ok: true, message: decryptMessage(message) });
-  } catch (error) {
-    if (req.file?.path) {
-      try { await fs.promises.unlink(req.file.path); } catch (_) {}
-    }
-    return res.status(400).json({ error: error.message || "Failed to upload audio" });
-  }
-});
 
-// ─── Удаление сообщений ─────────────────────────────────────────────────────
-app.delete("/api/messages/:messageId", authMiddleware, async (req, res) => {
-  const messageId = Number(req.params.messageId);
+    const msg = get("SELECT * FROM messages WHERE id=?", [
+      r.lastInsertRowid,
+    ]);
+
+    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(msg));
+
+    res.json({ ok: true, message: decryptMessage(msg) });
+  }
+);
+
+//////////////////////////////
+// AUDIO UPLOAD
+//////////////////////////////
+app.post(
+  "/api/chats/:id/voice",
+  authMiddleware,
+  audioUpload.single("audio"),
+  (req, res) => {
+    const chatId = Number(req.params.id);
+
+    const member = get(
+      "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+      [chatId, req.user.id]
+    );
+
+    if (!member) return res.status(403).json({ error: "Forbidden" });
+    if (!req.file) return res.status(400).json({ error: "No file" });
+
+    const r = run(
+      `INSERT INTO messages (chat_id,sender_id,content,message_type,audio_path)
+       VALUES (?,?,?,?,?)`,
+      [
+        chatId,
+        req.user.id,
+        encrypt("voice"),
+        "voice",
+        req.file.filename,
+      ]
+    );
+
+    const msg = get("SELECT * FROM messages WHERE id=?", [
+      r.lastInsertRowid,
+    ]);
+
+    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(msg));
+
+    res.json({ ok: true, message: decryptMessage(msg) });
+  }
+);
+
+//////////////////////////////
+// DELETE MESSAGE
+//////////////////////////////
+app.delete("/api/messages/:id", authMiddleware, (req, res) => {
+  const id = Number(req.params.id);
   const mode = req.query.mode;
-  const message = await get("SELECT * FROM messages WHERE id = ?", [messageId]);
-  if (!message) return res.status(404).json({ error: "Not found" });
 
-  const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [
-    message.chat_id,
-    req.user.id,
-  ]);
-  if (!participant) return res.status(403).json({ error: "Forbidden" });
+  const msg = get("SELECT * FROM messages WHERE id=?", [id]);
+  if (!msg) return res.status(404).json({ error: "Not found" });
+
+  const member = get(
+    "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+    [msg.chat_id, req.user.id]
+  );
+
+  if (!member) return res.status(403).json({ error: "Forbidden" });
 
   if (mode === "all") {
-    await removeMessageFile(message);
-    await run("DELETE FROM message_deletions WHERE message_id = ?", [messageId]);
-    await run("DELETE FROM messages WHERE id = ?", [messageId]);
-    io.to(`chat:${message.chat_id}`).emit("message:deleted_for_all", { messageId });
+    safeUnlink(msg.image_path);
+    safeUnlink(msg.audio_path);
+
+    run("DELETE FROM messages WHERE id=?", [id]);
+
+    io.to(`chat:${msg.chat_id}`).emit("message:deleted", { id });
+
     return res.json({ ok: true });
   }
 
-  // Удалить у меня
-  await run("INSERT OR IGNORE INTO message_deletions (message_id, user_id) VALUES (?, ?)", [messageId, req.user.id]);
-  const participantsCountRow = await get("SELECT COUNT(*) as total FROM chat_participants WHERE chat_id = ?", [message.chat_id]);
-  const deletionsCountRow = await get("SELECT COUNT(*) as total FROM message_deletions WHERE message_id = ?", [messageId]);
-
-  if (participantsCountRow?.total && deletionsCountRow?.total >= participantsCountRow.total) {
-    await removeMessageFile(message);
-    await run("DELETE FROM message_deletions WHERE message_id = ?", [messageId]);
-    await run("DELETE FROM messages WHERE id = ?", [messageId]);
-    io.to(`chat:${message.chat_id}`).emit("message:deleted_for_all", { messageId });
-  }
+  run(
+    "INSERT OR IGNORE INTO message_deletions (message_id,user_id) VALUES (?,?)",
+    [id, req.user.id]
+  );
 
   return res.json({ ok: true });
 });
 
-// ─── Очистка диалога ────────────────────────────────────────────────────────
-app.delete("/api/chats/:chatId/messages", authMiddleware, async (req, res) => {
-  const chatId = Number(req.params.chatId);
+//////////////////////////////
+// DELETE CHAT HISTORY
+//////////////////////////////
+app.delete("/api/chats/:id/messages", authMiddleware, (req, res) => {
+  const chatId = Number(req.params.id);
 
-  const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chatId, req.user.id]);
-  if (!participant) return res.status(403).json({ error: "Forbidden" });
+  const member = get(
+    "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+    [chatId, req.user.id]
+  );
 
-  // Получаем все сообщения с файлами и удаляем их с диска
-  const allMessages = await all("SELECT * FROM messages WHERE chat_id = ?", [chatId]);
-  for (const message of allMessages) {
-    await removeMessageFile(message);
+  if (!member) return res.status(403).json({ error: "Forbidden" });
+
+  const msgs = all("SELECT * FROM messages WHERE chat_id=?", [chatId]);
+
+  for (const m of msgs) {
+    safeUnlink(m.image_path);
+    safeUnlink(m.audio_path);
   }
 
-  // Удаляем все сообщения и связанные записи из БД
-  await run("DELETE FROM message_deletions WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ?)", [chatId]);
-  await run("DELETE FROM messages WHERE chat_id = ?", [chatId]);
+  run("DELETE FROM messages WHERE chat_id=?", [chatId]);
 
-  // Сбрасываем last_read у обоих участников
-  await run("UPDATE chat_participants SET last_read_message_id = NULL WHERE chat_id = ?", [chatId]);
-
-  // Оповещаем обоих участников
   io.to(`chat:${chatId}`).emit("chat:cleared", { chatId });
 
-  return res.json({ ok: true });
+  res.json({ ok: true });
 });
 
-
-app.post("/api/chats/:chatId/read", authMiddleware, async (req, res) => {
-  const chatId = Number(req.params.chatId);
+//////////////////////////////
+// READ RECEIPT
+//////////////////////////////
+app.post("/api/chats/:id/read", authMiddleware, (req, res) => {
+  const chatId = Number(req.params.id);
   const { messageId } = req.body;
-  await run("UPDATE chat_participants SET last_read_message_id = ? WHERE chat_id = ? AND user_id = ?", [
-    messageId,
+
+  run(
+    "UPDATE chat_participants SET last_read_message_id=? WHERE chat_id=? AND user_id=?",
+    [messageId, chatId, req.user.id]
+  );
+
+  io.to(`chat:${chatId}`).emit("message:read", {
     chatId,
-    req.user.id,
-  ]);
-  io.to(`chat:${chatId}`).emit("message:read", { chatId, userId: req.user.id, messageId });
-  return res.json({ ok: true });
+    userId: req.user.id,
+    messageId,
+  });
+
+  res.json({ ok: true });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SOCKET.IO
-// ═══════════════════════════════════════════════════════════════════════════
+//////////////////////////////
+// SOCKET EVENTS
+//////////////////////////////
 io.use((socket, next) => {
   try {
     const token = socket.handshake.auth.token;
-    const user = jwt.verify(token, JWT_SECRET);
-    socket.user = user;
-    return next();
-  } catch (error) {
-    return next(new Error("Unauthorized"));
+    socket.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    next(new Error("Unauthorized"));
   }
 });
 
-io.on("connection", async (socket) => {
+io.on("connection", (socket) => {
   const userId = socket.user.id;
+
   if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
   onlineUsers.get(userId).add(socket.id);
-  io.emit("presence:update", { userId, online: true });
 
-  const chats = await all("SELECT chat_id FROM chat_participants WHERE user_id = ?", [userId]);
-  chats.forEach((chat) => socket.join(`chat:${chat.chat_id}`));
+  const chats = all(
+    "SELECT chat_id FROM chat_participants WHERE user_id=?",
+    [userId]
+  );
+
+  chats.forEach((c) => socket.join(`chat:${c.chat_id}`));
 
   socket.on("typing:start", ({ chatId }) => {
-    socket.to(`chat:${chatId}`).emit("typing:update", { chatId, userId, typing: true });
+    socket.to(`chat:${chatId}`).emit("typing", {
+      chatId,
+      userId,
+      typing: true,
+    });
   });
 
   socket.on("typing:stop", ({ chatId }) => {
-    socket.to(`chat:${chatId}`).emit("typing:update", { chatId, userId, typing: false });
-  });
-
-  socket.on("message:send", async ({ chatId, content }) => {
-    if (!content || !String(content).trim()) return;
-    // Ограничение длины сообщения
-    const trimmed = String(content).trim().slice(0, 4000);
-    const participant = await get("SELECT * FROM chat_participants WHERE chat_id = ? AND user_id = ?", [chatId, userId]);
-    if (!participant) return;
-
-    const result = await run("INSERT INTO messages (chat_id, sender_id, content) VALUES (?, ?, ?)", [
+    socket.to(`chat:${chatId}`).emit("typing", {
       chatId,
       userId,
-      encrypt(trimmed),
-    ]);
-    const message = await get("SELECT * FROM messages WHERE id = ?", [result.lastID]);
-    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(message));
+      typing: false,
+    });
   });
 
-  socket.on("disconnect", async () => {
-    const sockets = onlineUsers.get(userId);
-    if (sockets) {
-      sockets.delete(socket.id);
-      if (sockets.size === 0) {
-        onlineUsers.delete(userId);
-        await run("UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE id = ?", [userId]);
-        io.emit("presence:update", { userId, online: false });
-      }
+  socket.on("message:send", (data) => {
+    const { chatId, content } = data;
+
+    if (!content?.trim()) return;
+
+    const member = get(
+      "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
+      [chatId, userId]
+    );
+
+    if (!member) return;
+
+    const r = run(
+      "INSERT INTO messages (chat_id,sender_id,content) VALUES (?,?,?)",
+      [chatId, userId, encrypt(content.slice(0, 4000))]
+    );
+
+    const msg = get("SELECT * FROM messages WHERE id=?", [
+      r.lastInsertRowid,
+    ]);
+
+    io.to(`chat:${chatId}`).emit("message:new", decryptMessage(msg));
+  });
+
+  socket.on("disconnect", () => {
+    const set = onlineUsers.get(userId);
+    if (!set) return;
+
+    set.delete(socket.id);
+
+    if (set.size === 0) {
+      onlineUsers.delete(userId);
+
+      run("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", [
+        userId,
+      ]);
     }
   });
 });
 
-// ─── Запуск ─────────────────────────────────────────────────────────────────
-initDb().then(() => {
-  server.listen(PORT, () => {
-    console.log(`Server on http://localhost:${PORT}`);
-  });
+//////////////////////////////
+// START SERVER
+//////////////////////////////
+initDb();
+
+server.listen(PORT, () => {
+  console.log("Server running on " + PORT);
 });
