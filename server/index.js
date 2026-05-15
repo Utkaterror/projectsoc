@@ -4,7 +4,7 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 const { Server } = require("socket.io");
 const fs = require("fs");
 const path = require("path");
@@ -105,7 +105,8 @@ app.use("/api/auth", authLimiter);
 app.use("/api", apiLimiter);
 
 // ─── БД и загрузки ─────────────────────────────────────────────────────────
-const db = new sqlite3.Database("./messenger.db");
+const db = new Database(path.join(__dirname, "messenger.db"));
+db.pragma("journal_mode = WAL");
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR));
@@ -143,29 +144,20 @@ const audioUpload = multer({
 });
 
 // ─── Вспомогательные функции БД ────────────────────────────────────────────
-const run = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
+const run = async (sql, params = []) => {
+  const stmt = db.prepare(sql);
+  return stmt.run(params);
+};
 
-const get = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
+const get = async (sql, params = []) => {
+  const stmt = db.prepare(sql);
+  return stmt.get(params);
+};
 
-const all = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
+const all = async (sql, params = []) => {
+  const stmt = db.prepare(sql);
+  return stmt.all(params);
+};
 
 const onlineUsers = new Map();
 
