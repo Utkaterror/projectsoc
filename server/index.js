@@ -105,7 +105,6 @@ app.use("/api/auth", authLimiter);
 app.use("/api", apiLimiter);
 
 // ─── БД и загрузки ─────────────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, "messenger.db"));
 db.pragma("journal_mode = WAL");
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -144,19 +143,39 @@ const audioUpload = multer({
 });
 
 // ─── Вспомогательные функции БД ────────────────────────────────────────────
+const DB_PATH =
+  process.env.NODE_ENV === "production"
+    ? "/opt/render/project/src/server/data/messenger.db"
+    : path.join(__dirname, "messenger.db");
+
+const db = new Database(DB_PATH);
+
+db.pragma("journal_mode = WAL");
+
+// ─── Вспомогательные функции БД ────────────────────────────────────────────
+const DB_PATH =
+  process.env.NODE_ENV === "production"
+    ? "/opt/render/project/src/server/data/messenger.db"
+    : path.join(__dirname, "messenger.db");
+
+const db = new Database(DB_PATH);
+
+db.pragma("journal_mode = WAL");
+
+// ─── Вспомогательные функции БД ────────────────────────────────────────────
 const run = async (sql, params = []) => {
   const stmt = db.prepare(sql);
-  return stmt.run(params);
+  return stmt.run(...params);
 };
 
 const get = async (sql, params = []) => {
   const stmt = db.prepare(sql);
-  return stmt.get(params);
+  return stmt.get(...params);
 };
 
 const all = async (sql, params = []) => {
   const stmt = db.prepare(sql);
-  return stmt.all(params);
+  return stmt.all(...params);
 };
 
 const onlineUsers = new Map();
