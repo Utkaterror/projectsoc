@@ -152,17 +152,6 @@ const db = new Database(DB_PATH);
 
 db.pragma("journal_mode = WAL");
 
-// ─── Вспомогательные функции БД ────────────────────────────────────────────
-const DB_PATH =
-  process.env.NODE_ENV === "production"
-    ? "/opt/render/project/src/server/data/messenger.db"
-    : path.join(__dirname, "messenger.db");
-
-const db = new Database(DB_PATH);
-
-db.pragma("journal_mode = WAL");
-
-// ─── Вспомогательные функции БД ────────────────────────────────────────────
 const run = async (sql, params = []) => {
   const stmt = db.prepare(sql);
   return stmt.run(...params);
