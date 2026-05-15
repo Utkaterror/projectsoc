@@ -105,7 +105,6 @@ app.use("/api/auth", authLimiter);
 app.use("/api", apiLimiter);
 
 // ─── БД и загрузки ─────────────────────────────────────────────────────────
-db.pragma("journal_mode = WAL");
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR));
