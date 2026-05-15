@@ -142,10 +142,10 @@ const audioUpload = multer({
 });
 
 // ─── Вспомогательные функции БД ────────────────────────────────────────────
-const DB_PATH =
-  process.env.NODE_ENV === "production"
-    ? "/opt/render/project/src/server/data/messenger.db"
-    : path.join(__dirname, "messenger.db");
+const DATA_DIR = path.join(__dirname, "data");
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const DB_PATH = path.join(DATA_DIR, "messenger.db");
 
 const db = new Database(DB_PATH);
 
