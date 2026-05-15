@@ -152,6 +152,7 @@ const db = new Database(DB_PATH);
 
 db.pragma("journal_mode = WAL");
 
+// ─── Вспомогательные функции БД ────────────────────────────────────────────
 const run = async (sql, params = []) => {
   const stmt = db.prepare(sql);
   return stmt.run(...params);
