@@ -475,8 +475,8 @@ function App() {
     return (
       <main className="auth-layout">
         <form className="card auth-card" onSubmit={authSubmit}>
-          <h1 className="auth-title">Friends Messenger</h1>
-          <p className="muted auth-hint">Логин: от 3 символов, пароль: от 4 символов</p>
+          <h1 className="auth-title">Whisp</h1>
+          <p className="muted auth-hint">Логин: от 3 символов, пароль: от 6 символов</p>
           <label className="auth-label" htmlFor="auth-login">Логин</label>
           <input
             id="auth-login"
