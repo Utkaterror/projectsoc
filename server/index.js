@@ -499,7 +499,8 @@ app.post("/api/friends/request/:id", authMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── Список входящих заявок ─────────────────────────────────────────────────
+
+// ─── Список входящих заявок ─────────────────────────────────
 app.get("/api/friends/requests", authMiddleware, (req, res) => {
   const rows = all(
     `SELECT fr.id, fr.from_user_id, u.login as from_login
@@ -510,6 +511,25 @@ app.get("/api/friends/requests", authMiddleware, (req, res) => {
     [req.user.id]
   );
   return res.json({ requests: rows });
+});
+
+// ─── Ответ на заявку (новый путь) ───────────────────────────
+app.post("/api/friends/request/:id/respond", authMiddleware, (req, res) => {
+  const id = Number(req.params.id);
+  const { action } = req.body;
+  const fr = get("SELECT * FROM friend_requests WHERE id=? AND to_user_id=?", [id, req.user.id]);
+  if (!fr) return res.status(404).json({ error: "Not found" });
+  if (action === "accept") {
+    const [a, b] = [fr.from_user_id, fr.to_user_id].sort((x, y) => x - y);
+    run("INSERT OR IGNORE INTO friendships (user1_id,user2_id) VALUES (?,?)", [a, b]);
+    const chat = db.prepare("INSERT INTO chats (is_direct) VALUES (1)").run();
+    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, a]);
+    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, b]);
+    run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
+  } else {
+    run("UPDATE friend_requests SET status='rejected' WHERE id=?", [id]);
+  }
+  res.json({ ok: true });
 });
 
 app.post("/api/friends/respond/:id", authMiddleware, (req, res) => {
@@ -545,33 +565,6 @@ app.post("/api/friends/respond/:id", authMiddleware, (req, res) => {
       [chat.lastInsertRowid, b]
     );
 
-    run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
-  } else {
-    run("UPDATE friend_requests SET status='rejected' WHERE id=?", [id]);
-  }
-
-  res.json({ ok: true });
-});
-
-// Алиас для совместимости с фронтом
-app.post("/api/friends/request/:id/respond", authMiddleware, (req, res) => {
-  req.params.id = req.params.id;
-  const id = Number(req.params.id);
-  const { action } = req.body;
-
-  const fr = get(
-    "SELECT * FROM friend_requests WHERE id=? AND to_user_id=?",
-    [id, req.user.id]
-  );
-
-  if (!fr) return res.status(404).json({ error: "Not found" });
-
-  if (action === "accept") {
-    const [a, b] = [fr.from_user_id, fr.to_user_id].sort((x, y) => x - y);
-    run("INSERT OR IGNORE INTO friendships (user1_id,user2_id) VALUES (?,?)", [a, b]);
-    const chat = db.prepare("INSERT INTO chats (is_direct) VALUES (1)").run();
-    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, a]);
-    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, b]);
     run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
   } else {
     run("UPDATE friend_requests SET status='rejected' WHERE id=?", [id]);
