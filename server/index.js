@@ -530,9 +530,26 @@ app.post("/api/friends/request/:id/respond", authMiddleware, (req, res) => {
     const [a, b] = [fr.from_user_id, fr.to_user_id].sort((x, y) => x - y);
     run("INSERT OR IGNORE INTO friendships (user1_id,user2_id) VALUES (?,?)", [a, b]);
     const chat = db.prepare("INSERT INTO chats (is_direct) VALUES (1)").run();
-    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, a]);
-    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chat.lastInsertRowid, b]);
+    const chatId = chat.lastInsertRowid;
+    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chatId, a]);
+    run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chatId, b]);
     run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
+
+    // Получаем данные обоих пользователей для оповещения
+    const userA = get("SELECT id, login FROM users WHERE id=?", [a]);
+    const userB = get("SELECT id, login FROM users WHERE id=?", [b]);
+
+    // Оповещаем обоих — у каждого появится новый чат
+    io.to(`user:${a}`).emit("chat:new", {
+      chatId,
+      friend: { id: userB.id, login: userB.login, online: onlineUsers.has(userB.id) },
+      lastMessage: null,
+    });
+    io.to(`user:${b}`).emit("chat:new", {
+      chatId,
+      friend: { id: userA.id, login: userA.login, online: onlineUsers.has(userA.id) },
+      lastMessage: null,
+    });
   } else {
     run("UPDATE friend_requests SET status='rejected' WHERE id=?", [id]);
   }
@@ -794,7 +811,7 @@ app.delete("/api/messages/:id", authMiddleware, (req, res) => {
 
     run("DELETE FROM messages WHERE id=?", [id]);
 
-    io.to(`chat:${msg.chat_id}`).emit("message:deleted", { id });
+    io.to(`chat:${msg.chat_id}`).emit("message:deleted_for_all", { id });
 
     return res.json({ ok: true });
   }
@@ -884,6 +901,9 @@ io.on("connection", (socket) => {
   // Личная комната для уведомлений
   socket.join(`user:${userId}`);
 
+  // Оповещаем всех что пользователь онлайн
+  io.emit("presence:update", { userId, online: true });
+
   socket.on("typing:start", ({ chatId }) => {
     socket.to(`chat:${chatId}`).emit("typing", {
       chatId,
@@ -932,10 +952,9 @@ io.on("connection", (socket) => {
 
     if (set.size === 0) {
       onlineUsers.delete(userId);
-
-      run("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", [
-        userId,
-      ]);
+      run("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", [userId]);
+      // Оповещаем всех что пользователь офлайн
+      io.emit("presence:update", { userId, online: false });
     }
   });
 });

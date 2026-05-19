@@ -304,7 +304,8 @@ function App() {
       headers: authHeaders(token),
       body: JSON.stringify({ action }),
     });
-    await loadAppData(token);
+    // Убираем заявку из списка локально
+    setRequests((prev) => prev.filter((r) => r.id !== requestId));
   };
 
   const sendMessage = () => {
@@ -329,7 +330,11 @@ function App() {
       method: "DELETE",
       headers: authHeaders(token),
     });
-    await loadMessages(activeChatId);
+    // При удалении у меня — убираем локально сразу
+    if (modeDelete === "me") {
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    }
+    // При удалении у всех — сервер пришлёт message:deleted_for_all через сокет
   };
 
   const clearChat = async (chatId) => {
@@ -380,13 +385,27 @@ function App() {
     }
   };
 
+  const touchTimeoutRef = useRef(null);
+
   const openMessageMenu = (event, messageId, isMine) => {
     event.preventDefault();
     const menuWidth = 200;
     const menuHeight = 92;
-    const safeX = Math.min(event.clientX, window.innerWidth - menuWidth - 12);
-    const safeY = Math.min(event.clientY, window.innerHeight - menuHeight - 12);
+    const clientX = event.clientX ?? event.touches?.[0]?.clientX ?? 0;
+    const clientY = event.clientY ?? event.touches?.[0]?.clientY ?? 0;
+    const safeX = Math.min(clientX, window.innerWidth - menuWidth - 12);
+    const safeY = Math.min(clientY, window.innerHeight - menuHeight - 12);
     setMenuState({ x: Math.max(12, safeX), y: Math.max(12, safeY), messageId, isMine });
+  };
+
+  const handleTouchStart = (event, messageId, isMine) => {
+    touchTimeoutRef.current = setTimeout(() => {
+      openMessageMenu(event, messageId, isMine);
+    }, 500);
+  };
+
+  const handleTouchEnd = () => {
+    clearTimeout(touchTimeoutRef.current);
   };
 
   const closeMessageMenu = () => setMenuState(null);
@@ -424,7 +443,20 @@ function App() {
       });
     });
 
-    socket.on("typing:update", ({ chatId, userId: typingUserId, typing }) => {
+    socket.on("chat:new", (chat) => {
+      setChats((prev) => {
+        const exists = prev.find((c) => c.chatId === chat.chatId);
+        if (exists) return prev;
+        return [chat, ...prev];
+      });
+      setFriends((prev) => {
+        const exists = prev.find((f) => f.id === chat.friend.id);
+        if (exists) return prev;
+        return [...prev, chat.friend];
+      });
+    });
+
+    socket.on("typing", ({ chatId, userId: typingUserId, typing }) => {
       if (typingUserId === user?.id) return;
       setTypingByChat((prev) => ({ ...prev, [chatId]: typing }));
     });
@@ -658,6 +690,9 @@ function App() {
                       key={msg.id}
                       className={`msg ${isMine ? "mine" : ""}`}
                       onContextMenu={(event) => openMessageMenu(event, msg.id, isMine)}
+                      onTouchStart={(event) => handleTouchStart(event, msg.id, isMine)}
+                      onTouchEnd={handleTouchEnd}
+                      onTouchMove={handleTouchEnd}
                     >
                       {msg.message_type === "image" && msg.image_path ? (
                         <img className="msg-image" src={buildFileUrl(msg.image_path)} alt={msg.content || "Фото"} />
