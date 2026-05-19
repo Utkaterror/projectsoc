@@ -535,9 +535,26 @@ app.post("/api/friends/request/:id/respond", authMiddleware, (req, res) => {
     run("INSERT INTO chat_participants (chat_id,user_id) VALUES (?,?)", [chatId, b]);
     run("UPDATE friend_requests SET status='accepted' WHERE id=?", [id]);
 
-    // Получаем данные обоих пользователей для оповещения
     const userA = get("SELECT id, login FROM users WHERE id=?", [a]);
     const userB = get("SELECT id, login FROM users WHERE id=?", [b]);
+
+    // Добавляем сокеты обоих пользователей в комнату нового чата
+    const roomA = io.sockets.adapter.rooms.get(`user:${a}`);
+    const roomB = io.sockets.adapter.rooms.get(`user:${b}`);
+
+    if (roomA) {
+      for (const socketId of roomA) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) s.join(`chat:${chatId}`);
+      }
+    }
+
+    if (roomB) {
+      for (const socketId of roomB) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) s.join(`chat:${chatId}`);
+      }
+    }
 
     // Оповещаем обоих — у каждого появится новый чат
     io.to(`user:${a}`).emit("chat:new", {
