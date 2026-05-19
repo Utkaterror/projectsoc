@@ -496,6 +496,13 @@ app.post("/api/friends/request/:id", authMiddleware, (req, res) => {
     [req.user.id, target]
   );
 
+  // Оповещаем получателя в реальном времени
+  const request = get(
+    "SELECT fr.id, fr.from_user_id, u.login as from_login FROM friend_requests fr JOIN users u ON u.id = fr.from_user_id WHERE fr.from_user_id = ? AND fr.to_user_id = ?",
+    [req.user.id, target]
+  );
+  io.to(`user:${target}`).emit("friend:request", request);
+
   res.json({ ok: true });
 });
 
@@ -873,6 +880,9 @@ io.on("connection", (socket) => {
   );
 
   chats.forEach((c) => socket.join(`chat:${c.chat_id}`));
+
+  // Личная комната для уведомлений
+  socket.join(`user:${userId}`);
 
   socket.on("typing:start", ({ chatId }) => {
     socket.to(`chat:${chatId}`).emit("typing", {
