@@ -326,11 +326,18 @@ function App() {
   };
 
   const deleteMessage = async (messageId, modeDelete) => {
-    await fetch(`${API_URL}/messages/${messageId}?mode=${modeDelete}`, {
+    const res = await fetch(`${API_URL}/messages/${messageId}?mode=${modeDelete}`, {
       method: "DELETE",
       headers: authHeaders(token),
     });
-    // При удалении у меня — убираем локально сразу
+
+    if (!res.ok) {
+      setError("Не удалось удалить сообщение");
+      return;
+    }
+
+    // При удалении у меня — сервер уже сохранил это в message_deletions,
+    // убираем локально сразу, чтобы не ждать перезагрузки
     if (modeDelete === "me") {
       setMessages((prev) => prev.filter((m) => m.id !== messageId));
     }

@@ -296,6 +296,14 @@ function initDb() {
   ensureColumnExists("messages", "message_type", "TEXT DEFAULT 'text'");
   ensureColumnExists("messages", "image_path", "TEXT");
   ensureColumnExists("messages", "audio_path", "TEXT");
+
+  run(`CREATE TABLE IF NOT EXISTS message_deletions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(message_id, user_id)
+  )`);
 }
 
 //////////////////////////////
@@ -713,11 +721,15 @@ app.get("/api/chats/:id/messages", authMiddleware, (req, res) => {
   if (!member) return res.status(403).json({ error: "Forbidden" });
 
   const rows = all(
-    `SELECT * FROM messages
-     WHERE chat_id=?
-     ORDER BY id DESC
+    `SELECT m.* FROM messages m
+     WHERE m.chat_id=?
+       AND NOT EXISTS (
+         SELECT 1 FROM message_deletions d
+         WHERE d.message_id = m.id AND d.user_id = ?
+       )
+     ORDER BY m.id DESC
      LIMIT ?`,
-    [chatId, limit]
+    [chatId, req.user.id, limit]
   );
 
   res.json({
@@ -828,7 +840,7 @@ app.delete("/api/messages/:id", authMiddleware, (req, res) => {
 
     run("DELETE FROM messages WHERE id=?", [id]);
 
-    io.to(`chat:${msg.chat_id}`).emit("message:deleted_for_all", { id });
+    io.to(`chat:${msg.chat_id}`).emit("message:deleted_for_all", { messageId: id });
 
     return res.json({ ok: true });
   }
