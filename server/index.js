@@ -215,29 +215,8 @@ function authMiddleware(req, res, next) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// SOCKET BASIC
-// ─────────────────────────────────────────────────────────────
-io.on("connection", (socket) => {
-  const userId = socket.user?.id;
-  if (!userId) return;
-
-  if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
-  onlineUsers.get(userId).add(socket.id);
-
-  socket.on("disconnect", () => {
-    const set = onlineUsers.get(userId);
-    if (!set) return;
-
-    set.delete(socket.id);
-    if (set.size === 0) {
-      onlineUsers.delete(userId);
-      run("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=?", [userId]);
-    }
-  });
-});
-//////////////////////////////
 // DB INIT
-//////////////////////////////
+// ─────────────────────────────────────────────────────────────
 function initDb() {
   run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -445,6 +424,84 @@ app.post("/api/auth/logout", authMiddleware, (req, res) => {
       }
     }
   }
+
+  res.json({ ok: true });
+});
+
+//////////////////////////////
+// DELETE ACCOUNT
+//////////////////////////////
+app.delete("/api/auth/account", authMiddleware, (req, res) => {
+  const userId = req.user.id;
+
+  const deleteTx = db.transaction(() => {
+    // Файлы (фото/голосовые), которые отправил пользователь — удаляем с диска
+    const ownMessages = all(
+      "SELECT image_path, audio_path FROM messages WHERE sender_id=?",
+      [userId]
+    );
+    for (const m of ownMessages) {
+      safeUnlink(m.image_path);
+      safeUnlink(m.audio_path);
+    }
+
+    // Чаты, где пользователь участвует — понадобятся, чтобы оповестить собеседников
+    const userChats = all(
+      "SELECT chat_id FROM chat_participants WHERE user_id=?",
+      [userId]
+    );
+
+    // Сообщения этого пользователя стираем целиком (аккаунта больше не будет)
+    run("DELETE FROM messages WHERE sender_id=?", [userId]);
+
+    // Отметки "удалено для меня", оставленные этим пользователем
+    run("DELETE FROM message_deletions WHERE user_id=?", [userId]);
+
+    // Участие в чатах
+    run("DELETE FROM chat_participants WHERE user_id=?", [userId]);
+
+    // Дружбы и заявки в друзья (в обе стороны)
+    run(
+      "DELETE FROM friendships WHERE user1_id=? OR user2_id=?",
+      [userId, userId]
+    );
+    run(
+      "DELETE FROM friend_requests WHERE from_user_id=? OR to_user_id=?",
+      [userId, userId]
+    );
+
+    // Refresh-токены
+    run("DELETE FROM refresh_tokens WHERE user_id=?", [userId]);
+
+    // Сам пользователь
+    run("DELETE FROM users WHERE id=?", [userId]);
+
+    return userChats;
+  });
+
+  let userChats;
+  try {
+    userChats = deleteTx();
+  } catch (e) {
+    console.error("Account deletion failed:", e);
+    return res.status(500).json({ error: "Не удалось удалить аккаунт" });
+  }
+
+  // Оповещаем собеседников и отключаем все сокеты удалённого пользователя
+  for (const c of userChats) {
+    io.to(`chat:${c.chat_id}`).emit("chat:deleted", { chatId: c.chat_id, userId });
+  }
+
+  const sockets = onlineUsers.get(userId);
+  if (sockets) {
+    for (const socketId of sockets) {
+      const s = io.sockets.sockets.get(socketId);
+      if (s) s.disconnect(true);
+    }
+    onlineUsers.delete(userId);
+  }
+
+  io.emit("presence:update", { userId, online: false });
 
   res.json({ ok: true });
 });
@@ -712,6 +769,7 @@ app.get("/api/chats", authMiddleware, (req, res) => {
 app.get("/api/chats/:id/messages", authMiddleware, (req, res) => {
   const chatId = Number(req.params.id);
   const limit = Math.min(Number(req.query.limit || 50), 100);
+  const before = req.query.before ? Number(req.query.before) : null;
 
   const member = get(
     "SELECT * FROM chat_participants WHERE chat_id=? AND user_id=?",
@@ -720,20 +778,36 @@ app.get("/api/chats/:id/messages", authMiddleware, (req, res) => {
 
   if (!member) return res.status(403).json({ error: "Forbidden" });
 
-  const rows = all(
-    `SELECT m.* FROM messages m
-     WHERE m.chat_id=?
-       AND NOT EXISTS (
-         SELECT 1 FROM message_deletions d
-         WHERE d.message_id = m.id AND d.user_id = ?
-       )
-     ORDER BY m.id DESC
-     LIMIT ?`,
-    [chatId, req.user.id, limit]
-  );
+  const rows = before
+    ? all(
+        `SELECT m.* FROM messages m
+         WHERE m.chat_id=? AND m.id<?
+           AND NOT EXISTS (
+             SELECT 1 FROM message_deletions d
+             WHERE d.message_id = m.id AND d.user_id = ?
+           )
+         ORDER BY m.id DESC
+         LIMIT ?`,
+        [chatId, before, req.user.id, limit + 1]
+      )
+    : all(
+        `SELECT m.* FROM messages m
+         WHERE m.chat_id=?
+           AND NOT EXISTS (
+             SELECT 1 FROM message_deletions d
+             WHERE d.message_id = m.id AND d.user_id = ?
+           )
+         ORDER BY m.id DESC
+         LIMIT ?`,
+        [chatId, req.user.id, limit + 1]
+      );
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
 
   res.json({
-    messages: rows.reverse().map(decryptMessage),
+    messages: page.reverse().map(decryptMessage),
+    hasMore,
   });
 });
 

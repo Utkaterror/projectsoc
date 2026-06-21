@@ -359,7 +359,7 @@ function App() {
 
     const formData = new FormData();
     formData.append("image", file);
-    const res = await fetch(`${API_URL}/chats/${activeChatId}/images`, {
+    const res = await fetch(`${API_URL}/chats/${activeChatId}/image`, {
       method: "POST",
       headers: authHeaders(token, false),
       body: formData,
@@ -504,6 +504,15 @@ function App() {
           ? { ...chat, lastMessage: null }
           : chat
       ));
+    });
+
+    socket.on("chat:deleted", ({ chatId, userId: deletedUserId }) => {
+      setChats((prev) => prev.filter((chat) => chat.chatId !== chatId));
+      setFriends((prev) => prev.filter((f) => f.id !== deletedUserId));
+      if (chatId === activeChatIdRef.current) {
+        setActiveChatId(null);
+        setMessages([]);
+      }
     });
 
     socket.on("message:read", ({ chatId, userId: readUserId, messageId }) => {
