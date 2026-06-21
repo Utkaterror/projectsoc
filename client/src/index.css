@@ -368,7 +368,7 @@ button.ghost:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 13px 20px;
+  padding: 13px max(20px, calc(50% - 380px));
   background: #212530;
   border-bottom: 1px solid #2a2f3d;
   flex-shrink: 0;
@@ -406,7 +406,7 @@ button.ghost:hover {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 18px 20px 10px;
+  padding: 18px max(20px, calc(50% - 380px)) 10px;
 }
 
 .msg {
@@ -556,7 +556,7 @@ button.ghost:hover {
 
 /* ── Панель ввода ───────────────────────────────────────────── */
 footer.row {
-  padding: 8px 12px;
+  padding: 8px max(12px, calc(50% - 380px));
   background: #212530;
   border-top: 1px solid #2a2f3d;
   gap: 4px;
