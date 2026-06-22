@@ -20,6 +20,7 @@ function VoiceMessage({ src, isMine }) {
   const [current, setCurrent] = useState(0);
 
   const fmt = (s) => {
+    if (!s || !isFinite(s)) return "0:00";
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
     return `${m}:${sec.toString().padStart(2, "0")}`;
@@ -36,19 +37,34 @@ function VoiceMessage({ src, isMine }) {
     const a = audioRef.current;
     if (!a) return;
     setCurrent(a.currentTime);
-    setProgress(a.duration ? (a.currentTime / a.duration) * 100 : 0);
+    setProgress(a.duration && isFinite(a.duration) ? (a.currentTime / a.duration) * 100 : 0);
   };
 
   const onLoaded = () => {
     const a = audioRef.current;
-    if (a && isFinite(a.duration)) setDuration(a.duration);
+    if (!a) return;
+    if (isFinite(a.duration) && a.duration > 0) {
+      setDuration(a.duration);
+    } else {
+      // webm без duration header: перематываем в конец чтобы браузер вычислил duration
+      a.currentTime = 1e9;
+    }
+  };
+
+  const onSeeked = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (isFinite(a.duration) && a.duration > 0 && duration === 0) {
+      setDuration(a.duration);
+      a.currentTime = 0; // возвращаем в начало
+    }
   };
 
   const onEnded = () => { setPlaying(false); setProgress(0); setCurrent(0); };
 
   const seek = (e) => {
     const a = audioRef.current;
-    if (!a) return;
+    if (!a || !isFinite(a.duration)) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
     a.currentTime = ratio * a.duration;
@@ -56,7 +72,7 @@ function VoiceMessage({ src, isMine }) {
 
   return (
     <div className={`voice-player ${isMine ? "mine" : ""}`}>
-      <audio ref={audioRef} src={src} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoaded} onEnded={onEnded} />
+      <audio ref={audioRef} src={src} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoaded} onSeeked={onSeeked} onEnded={onEnded} />
       <button className="voice-play-btn" onClick={toggle}>
         {playing ? (
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>

@@ -41,7 +41,6 @@ button {
   font-size: 14px;
   font-weight: 500;
   transition: filter 0.15s, transform 0.1s;
-  min-height: 44px; /* минимальный touch-таргет по HIG Apple */
 }
 button:active { transform: scale(0.97); }
 button:disabled { cursor: not-allowed; opacity: 0.4; }
@@ -867,6 +866,11 @@ footer.row input:focus {
   .chat-item {
     padding: 12px 14px;
     min-height: 56px;
+  }
+
+  /* Минимальный touch-таргет для всех кнопок — только на мобиле */
+  button {
+    min-height: 44px;
   }
 
   /* Шапка чата — делаем место под кнопку назад */
