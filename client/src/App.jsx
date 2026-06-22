@@ -439,6 +439,32 @@ function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [activeChatId]);
 
+  // Фикс клавиатуры на мобиле: двигаем интерфейс вверх когда выезжает клавиатура
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const handleResize = () => {
+      const offset = window.innerHeight - vv.height - vv.offsetTop;
+      document.documentElement.style.setProperty(
+        "--kb-height",
+        `${Math.max(0, offset)}px`
+      );
+      // Скроллим к последнему сообщению когда клавиатура открылась
+      if (offset > 100) {
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 50);
+      }
+    };
+
+    vv.addEventListener("resize", handleResize);
+    vv.addEventListener("scroll", handleResize);
+    return () => {
+      vv.removeEventListener("resize", handleResize);
+      vv.removeEventListener("scroll", handleResize);
+      document.documentElement.style.setProperty("--kb-height", "0px");
+    };
+  }, []);
+
   useEffect(() => {
     window.addEventListener("click", closeMessageMenu);
     return () => window.removeEventListener("click", closeMessageMenu);

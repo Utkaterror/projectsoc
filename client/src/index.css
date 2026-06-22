@@ -2,6 +2,7 @@
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color: #c5c8d0;
   background: #1c2029;
+  --kb-height: 0px; /* высота клавиатуры на мобиле, меняется через JS */
 }
 
 * {
@@ -815,6 +816,8 @@ footer.row input:focus {
     height: 100dvh;
     transform: translateX(100%);
     transition: transform 0.25s ease;
+    /* Поднимаем весь чат вверх когда выезжает клавиатура */
+    padding-bottom: var(--kb-height);
   }
 
   /* Когда чат открыт — выдвигаем чат и убираем сайдбар */
