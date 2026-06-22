@@ -393,20 +393,28 @@ function App() {
   };
 
   const touchTimeoutRef = useRef(null);
+  const touchCoordsRef = useRef({ x: 0, y: 0 });
 
   const openMessageMenu = (event, messageId, isMine) => {
     event.preventDefault();
     const menuWidth = 200;
-    const menuHeight = 92;
-    const clientX = event.clientX ?? event.touches?.[0]?.clientX ?? 0;
-    const clientY = event.clientY ?? event.touches?.[0]?.clientY ?? 0;
+    const menuHeight = 140;
+    const clientX = event.clientX ?? event.touches?.[0]?.clientX ?? touchCoordsRef.current.x;
+    const clientY = event.clientY ?? event.touches?.[0]?.clientY ?? touchCoordsRef.current.y;
     const safeX = Math.min(clientX, window.innerWidth - menuWidth - 12);
     const safeY = Math.min(clientY, window.innerHeight - menuHeight - 12);
     setMenuState({ x: Math.max(12, safeX), y: Math.max(12, safeY), messageId, isMine });
   };
 
   const handleTouchStart = (event, messageId, isMine) => {
+    // Сохраняем координаты сразу — к моменту таймаута touches уже может быть пустым
+    const touch = event.touches?.[0];
+    if (touch) {
+      touchCoordsRef.current = { x: touch.clientX, y: touch.clientY };
+    }
     touchTimeoutRef.current = setTimeout(() => {
+      // Тактильный фидбек при long-press (поддерживается на Android и iOS 13+)
+      navigator.vibrate?.(40);
       openMessageMenu(event, messageId, isMine);
     }, 500);
   };
