@@ -575,7 +575,7 @@ function App() {
   }
 
   return (
-    <main className="app-layout">
+    <main className={`app-layout${activeChatId ? " mobile-chat-open" : ""}`}>
       <aside className="sidebar">
         <div className="card section">
           <div className="top-row">

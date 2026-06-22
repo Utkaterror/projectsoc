@@ -11,7 +11,7 @@
 }
 
 body { background: #1c2029; }
-#root { min-height: 100vh; }
+#root { min-height: 100dvh; }
 
 /* ── Скроллбар ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; }
@@ -25,7 +25,7 @@ input {
   background: #232834;
   color: #c5c8d0;
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: 16px; /* минимум 16px — убирает автозум на iOS */
   outline: none;
   transition: border-color 0.15s;
 }
@@ -40,6 +40,7 @@ button {
   font-size: 14px;
   font-weight: 500;
   transition: filter 0.15s, transform 0.1s;
+  min-height: 44px; /* минимальный touch-таргет по HIG Apple */
 }
 button:active { transform: scale(0.97); }
 button:disabled { cursor: not-allowed; opacity: 0.4; }
@@ -59,6 +60,29 @@ button.ghost:hover {
   background: #232834;
   color: #c5c8d0;
   border-color: #4a9fc8;
+}
+
+/* Убираем hover-эффекты на touch — они "залипают" после тапа */
+@media (hover: none) {
+  button:not(.ghost):not(.recording-btn):not(.chat-item):not(.attach-inside):hover {
+    filter: none;
+  }
+  button.ghost:hover {
+    background: transparent;
+    color: #7a8090;
+    border-color: #2e3440;
+  }
+  .chat-item:hover { background: transparent; }
+  .friend-item:hover { background: transparent; }
+  .attach-inside:hover { color: #8a9ab8; }
+  .icon-btn:hover { color: #6a7890; background: transparent; }
+  .send-btn:hover { filter: none; }
+  .voice-play-btn:hover { filter: none !important; }
+  .chat-header button.ghost:hover {
+    background: transparent;
+    color: #6a7080;
+    border-color: #2e3440;
+  }
 }
 
 /* ── Авторизация ────────────────────────────────────────────── */
@@ -114,7 +138,7 @@ button.ghost:hover {
 .app-layout {
   display: grid;
   grid-template-columns: 300px 1fr;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -351,7 +375,7 @@ button.ghost:hover {
 .chat-window {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   background: #1c2029;
   overflow: hidden;
 }
@@ -747,9 +771,95 @@ footer.row input:focus {
 
 /* ── Адаптив ────────────────────────────────────────────────── */
 @media (max-width: 860px) {
+  /* Layout: одна колонка, обе панели на весь экран */
   .app-layout {
     grid-template-columns: 1fr;
-    height: auto;
+    grid-template-rows: 1fr;
+    height: 100dvh;
+    overflow: hidden;
   }
-  .chat-window { height: 70vh; }
+
+  /* Сайдбар занимает весь экран по умолчанию */
+  .sidebar {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    width: 100%;
+    height: 100dvh;
+    display: flex;
+    transition: transform 0.25s ease;
+  }
+
+  /* Окно чата тоже на весь экран, по умолчанию скрыто за правым краем */
+  .chat-window {
+    position: fixed;
+    inset: 0;
+    z-index: 11;
+    width: 100%;
+    height: 100dvh;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+  }
+
+  /* Когда чат открыт — выдвигаем чат и убираем сайдбар */
+  .app-layout.mobile-chat-open .sidebar {
+    transform: translateX(-100%);
+  }
+  .app-layout.mobile-chat-open .chat-window {
+    transform: translateX(0);
+  }
+
+  /* Убираем центрирующий паддинг сообщений — на телефоне ширина и так маленькая */
+  .messages {
+    padding: 12px 12px 8px;
+  }
+
+  /* Пузыри сообщений чуть шире на телефоне */
+  .msg {
+    max-width: 80%;
+  }
+
+  /* Поле ввода чуть компактнее */
+  footer.row {
+    padding: 6px 8px;
+  }
+
+  /* input в поле ввода — увеличиваем font-size для предотвращения зума на iOS */
+  footer.row input {
+    font-size: 16px;
+  }
+
+  /* touch-таргет для chat-item */
+  .chat-item {
+    padding: 12px 14px;
+    min-height: 56px;
+  }
+
+  /* Шапка чата — делаем место под кнопку назад */
+  .chat-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  /* Изображения не вылезают за экран */
+  .msg-image {
+    max-width: min(260px, 70vw);
+  }
+
+  /* Контекстное меню на мобиле — шире для удобного тапа */
+  .context-menu {
+    min-width: 220px;
+  }
+  .context-menu button.ghost {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+
+  /* Авторизация */
+  .auth-layout {
+    min-height: 100dvh;
+    padding: 12px;
+    align-items: flex-start;
+    padding-top: 40px;
+  }
 }
