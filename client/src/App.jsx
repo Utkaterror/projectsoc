@@ -422,6 +422,23 @@ function App() {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
 
+  // Мобильная навигация: кнопка "Назад" в браузере/системе закрывает чат
+  useEffect(() => {
+    if (activeChatId) {
+      window.history.pushState({ chatOpen: true }, "");
+    }
+
+    const handlePopState = (e) => {
+      if (activeChatIdRef.current) {
+        setActiveChatId(null);
+        setMessages([]);
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [activeChatId]);
+
   useEffect(() => {
     window.addEventListener("click", closeMessageMenu);
     return () => window.removeEventListener("click", closeMessageMenu);
@@ -672,6 +689,13 @@ function App() {
         {activeChat ? (
           <>
             <header className="chat-header">
+              <button
+                className="ghost back-btn"
+                onClick={() => { setActiveChatId(null); setMessages([]); }}
+                aria-label="Назад"
+              >
+                ←
+              </button>
               <h2>{activeChat.friend.login}</h2>
               <span className={activeChat.friend.online ? "online" : "offline"}>
                 {activeChat.friend.online ? "online" : "не в сети"}

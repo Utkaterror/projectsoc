@@ -387,6 +387,22 @@ button.ghost:hover {
   padding: 0;
 }
 
+/* ── Кнопка назад (только мобиле) ──────────────────────────── */
+.back-btn {
+  display: none;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-color: transparent;
+  color: #4a9fc8;
+}
+
 /* ── Шапка чата ─────────────────────────────────────────────── */
 .chat-header {
   display: flex;
@@ -839,6 +855,11 @@ footer.row input:focus {
   .chat-header {
     padding: 10px 12px;
     gap: 8px;
+  }
+
+  /* Кнопка назад — показываем только на мобиле */
+  .back-btn {
+    display: flex;
   }
 
   /* Изображения не вылезают за экран */
