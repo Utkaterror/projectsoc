@@ -476,6 +476,11 @@ button.ghost:hover {
 
 .msg p { margin: 0; }
 
+/* Пузырь с голосовым — минимальная ширина для читаемого трека */
+.msg:has(.voice-player) {
+  min-width: 220px;
+}
+
 /* ── Мета сообщения (время + галочки) ───────────────────────── */
 .msg-meta {
   display: flex;
@@ -536,7 +541,13 @@ button.ghost:hover {
   align-items: center;
   gap: 8px;
   padding: 2px 0;
-  width: 220px;
+  /* Минимальная ширина трека чтобы плеер не был слишком узким */
+  min-width: 0;
+}
+
+.voice-player .voice-track {
+  flex: 1;
+  min-width: 120px;
 }
 
 .voice-play-btn {

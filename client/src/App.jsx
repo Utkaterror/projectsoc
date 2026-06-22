@@ -373,10 +373,11 @@ function App() {
 
   const uploadVoice = async () => {
     if (!activeChatId) return;
-    const blob = await stopRecording();
-    if (!blob) return;
+    const result = await stopRecording();
+    if (!result) return;
 
-    const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm;codecs=opus" });
+    const { blob, ext } = result;
+    const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: blob.type });
     const formData = new FormData();
     formData.append("audio", file);
 
