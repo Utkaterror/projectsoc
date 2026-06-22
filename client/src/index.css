@@ -452,6 +452,7 @@ button.ghost:hover {
 
 .msg {
   max-width: 65%;
+  width: fit-content;
   padding: 8px 13px;
   border-radius: 16px;
   border-bottom-left-radius: 4px;
@@ -535,7 +536,7 @@ button.ghost:hover {
   align-items: center;
   gap: 8px;
   padding: 2px 0;
-  min-width: 200px;
+  width: 220px;
 }
 
 .voice-play-btn {
