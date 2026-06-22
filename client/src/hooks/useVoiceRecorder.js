@@ -2,17 +2,23 @@ import { useRef, useState } from "react";
 
 // Определяем поддерживаемый формат один раз при загрузке модуля
 function getSupportedMimeType() {
+  // iOS Safari: isTypeSupported может вернуть false для всех типов,
+  // но реально поддерживает audio/mp4. Определяем iOS отдельно.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  if (isIOS) return "audio/mp4";
+
   const types = [
     "audio/webm;codecs=opus",
     "audio/webm",
     "audio/mp4",
-    "audio/aac",
     "audio/ogg;codecs=opus",
   ];
   for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
-  return ""; // браузер выберет сам
+  return "";
 }
 
 const MIME_TYPE = getSupportedMimeType();

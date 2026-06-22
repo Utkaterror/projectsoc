@@ -124,7 +124,22 @@ app.use(
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-app.use("/uploads", express.static(UPLOADS_DIR));
+// Отдаём файлы из uploads с правильным Content-Type
+// express.static для .mp4 ставит video/mp4 — Safari не грузит метаданные аудио
+app.get("/uploads/:filename", (req, res) => {
+  const filename = path.basename(req.params.filename); // защита от path traversal
+  const filePath = path.join(UPLOADS_DIR, filename);
+  const ext = path.extname(filename).toLowerCase();
+
+  const audioExts = { ".mp4": "audio/mp4", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".webm": "audio/webm" };
+  const imageExts = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
+
+  const contentType = audioExts[ext] || imageExts[ext] || "application/octet-stream";
+  res.setHeader("Content-Type", contentType);
+  res.sendFile(filePath, { root: "/" }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: "File not found" });
+  });
+});
 
 // safe delete helper
 function safeUnlink(file) {
