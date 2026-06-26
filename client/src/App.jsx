@@ -20,10 +20,16 @@ function VoiceMessage({ src, isMine }) {
   const [current, setCurrent] = useState(0);
 
   const fmt = (s) => {
-    if (!s || !isFinite(s) || s <= 0) return "0:00";
+    if (!s || !isFinite(s) || s <= 0 || s >= 3600) return "0:00";
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
     return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  const trySetDuration = (a) => {
+    if (!a) return;
+    const d = a.duration;
+    if (isFinite(d) && d > 0 && d < 3600) setDuration(d);
   };
 
   const toggle = () => {
@@ -37,17 +43,8 @@ function VoiceMessage({ src, isMine }) {
     const a = audioRef.current;
     if (!a) return;
     setCurrent(a.currentTime);
-    setProgress(a.duration && isFinite(a.duration) ? (a.currentTime / a.duration) * 100 : 0);
-  };
-
-  // onDurationChange срабатывает каждый раз когда браузер уточняет duration
-  const onDurationChange = () => {
-    const a = audioRef.current;
-    if (!a) return;
-    const d = a.duration;
-    // Фильтруем невалидные значения: Infinity, NaN, 0, и абсурдно большие (>1 часа)
-    if (isFinite(d) && d > 0 && d < 3600) {
-      setDuration(d);
+    if (isFinite(a.duration) && a.duration > 0 && a.duration < 3600) {
+      setProgress((a.currentTime / a.duration) * 100);
     }
   };
 
@@ -56,14 +53,12 @@ function VoiceMessage({ src, isMine }) {
     setPlaying(false);
     setProgress(0);
     setCurrent(0);
-    if (a && isFinite(a.duration) && a.duration > 0 && a.duration < 3600) {
-      setDuration(a.duration);
-    }
+    trySetDuration(a);
   };
 
   const seek = (e) => {
     const a = audioRef.current;
-    if (!a || !isFinite(a.duration)) return;
+    if (!a || !isFinite(a.duration) || a.duration >= 3600) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
     a.currentTime = ratio * a.duration;
@@ -74,12 +69,12 @@ function VoiceMessage({ src, isMine }) {
       <audio
         ref={audioRef}
         src={src}
-        crossOrigin="anonymous"
-        onTimeUpdate={onTimeUpdate}
-        onLoadedMetadata={onDurationChange}
-        onDurationChange={onDurationChange}
-        onEnded={onEnded}
         preload="metadata"
+        onLoadedMetadata={(e) => trySetDuration(e.target)}
+        onDurationChange={(e) => trySetDuration(e.target)}
+        onCanPlay={(e) => trySetDuration(e.target)}
+        onTimeUpdate={onTimeUpdate}
+        onEnded={onEnded}
       />
       <button className="voice-play-btn" onClick={toggle}>
         {playing ? (
