@@ -20,7 +20,7 @@ function VoiceMessage({ src, isMine }) {
   const [current, setCurrent] = useState(0);
 
   const fmt = (s) => {
-    if (!s || !isFinite(s)) return "0:00";
+    if (!s || !isFinite(s) || s <= 0) return "0:00";
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
     return `${m}:${sec.toString().padStart(2, "0")}`;
@@ -40,27 +40,26 @@ function VoiceMessage({ src, isMine }) {
     setProgress(a.duration && isFinite(a.duration) ? (a.currentTime / a.duration) * 100 : 0);
   };
 
-  const onLoaded = () => {
+  // onDurationChange срабатывает каждый раз когда браузер уточняет duration
+  const onDurationChange = () => {
     const a = audioRef.current;
     if (!a) return;
-    if (isFinite(a.duration) && a.duration > 0) {
-      setDuration(a.duration);
-    } else {
-      // webm без duration header: перематываем в конец чтобы браузер вычислил duration
-      a.currentTime = 1e9;
+    const d = a.duration;
+    // Фильтруем невалидные значения: Infinity, NaN, 0, и абсурдно большие (>1 часа)
+    if (isFinite(d) && d > 0 && d < 3600) {
+      setDuration(d);
     }
   };
 
-  const onSeeked = () => {
+  const onEnded = () => {
     const a = audioRef.current;
-    if (!a) return;
-    if (isFinite(a.duration) && a.duration > 0 && duration === 0) {
+    setPlaying(false);
+    setProgress(0);
+    setCurrent(0);
+    if (a && isFinite(a.duration) && a.duration > 0 && a.duration < 3600) {
       setDuration(a.duration);
-      a.currentTime = 0; // возвращаем в начало
     }
   };
-
-  const onEnded = () => { setPlaying(false); setProgress(0); setCurrent(0); };
 
   const seek = (e) => {
     const a = audioRef.current;
@@ -72,7 +71,15 @@ function VoiceMessage({ src, isMine }) {
 
   return (
     <div className={`voice-player ${isMine ? "mine" : ""}`}>
-      <audio ref={audioRef} src={src} onTimeUpdate={onTimeUpdate} onLoadedMetadata={onLoaded} onSeeked={onSeeked} onEnded={onEnded} />
+      <audio
+        ref={audioRef}
+        src={src}
+        onTimeUpdate={onTimeUpdate}
+        onLoadedMetadata={onDurationChange}
+        onDurationChange={onDurationChange}
+        onEnded={onEnded}
+        preload="metadata"
+      />
       <button className="voice-play-btn" onClick={toggle}>
         {playing ? (
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>

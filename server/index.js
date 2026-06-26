@@ -876,12 +876,14 @@ app.post(
 function convertToMp4(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
     execFile("ffmpeg", [
-      "-y",               // перезаписать если есть
-      "-i", inputPath,    // входной файл
-      "-c:a", "aac",      // кодек aac — универсальный
-      "-b:a", "64k",      // битрейт 64kbps достаточно для голоса
-      "-vn",              // без видео
-      "-movflags", "+faststart", // duration в начале файла — сразу виден таймер
+      "-y",
+      "-analyzeduration", "100M",  // больше времени на анализ потока (нужно для webm без duration)
+      "-probesize", "100M",         // больше данных для определения формата
+      "-i", inputPath,
+      "-c:a", "aac",
+      "-b:a", "64k",
+      "-vn",
+      "-movflags", "+faststart",    // duration в начале файла — сразу виден таймер
       outputPath
     ], (err) => {
       if (err) reject(err);
