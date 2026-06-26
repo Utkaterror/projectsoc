@@ -125,10 +125,10 @@ app.use(
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// Отдаём файлы из uploads с правильным Content-Type
-// express.static для .mp4 ставит video/mp4 — Safari не грузит метаданные аудио
+// Отдаём файлы из uploads с правильным Content-Type и поддержкой range requests
+// Range requests обязательны для <audio> — без них не работает ползунок и onTimeUpdate
 app.get("/uploads/:filename", (req, res) => {
-  const filename = path.basename(req.params.filename); // защита от path traversal
+  const filename = path.basename(req.params.filename);
   const filePath = path.join(UPLOADS_DIR, filename);
   const ext = path.extname(filename).toLowerCase();
 
@@ -136,7 +136,15 @@ app.get("/uploads/:filename", (req, res) => {
   const imageExts = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
 
   const contentType = audioExts[ext] || imageExts[ext] || "application/octet-stream";
+
+  // CORS для медиафайлов (нужно для cross-origin audio в браузере)
+  res.setHeader("Access-Control-Allow-Origin", CLIENT_ORIGIN);
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   res.setHeader("Content-Type", contentType);
+  // Accept-Ranges позволяет браузеру делать range requests — без этого <audio> не seekает и не показывает прогресс
+  res.setHeader("Accept-Ranges", "bytes");
+
   res.sendFile(filePath, { root: "/" }, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: "File not found" });
   });

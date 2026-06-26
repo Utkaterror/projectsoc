@@ -74,6 +74,7 @@ function VoiceMessage({ src, isMine }) {
       <audio
         ref={audioRef}
         src={src}
+        crossOrigin="anonymous"
         onTimeUpdate={onTimeUpdate}
         onLoadedMetadata={onDurationChange}
         onDurationChange={onDurationChange}
