@@ -32,6 +32,13 @@ function VoiceMessage({ src, isMine }) {
     if (isFinite(d) && d > 0 && d < 3600) setDuration(d);
   };
 
+  // При монтировании принудительно загружаем метаданные
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.load();
+  }, [src]);
+
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
@@ -58,9 +65,15 @@ function VoiceMessage({ src, isMine }) {
 
   const seek = (e) => {
     const a = audioRef.current;
-    if (!a || !isFinite(a.duration) || a.duration >= 3600) return;
+    if (!a) return;
+    // Если duration ещё неизвестен — запускаем воспроизведение, оно вычислит duration
+    if (!isFinite(a.duration) || a.duration <= 0) {
+      a.play().then(() => setPlaying(true)).catch(() => {});
+      return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     a.currentTime = ratio * a.duration;
   };
 
