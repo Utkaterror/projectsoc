@@ -12,6 +12,7 @@ const multer = require("multer");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
+const { execFile } = require("child_process");
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -869,11 +870,31 @@ app.post(
 //////////////////////////////
 // AUDIO UPLOAD
 //////////////////////////////
+
+// Конвертируем любой аудиоформат в mp4/aac через ffmpeg
+// mp4/aac воспроизводится везде: Chrome, Firefox, Safari, iOS, Android
+function convertToMp4(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    execFile("ffmpeg", [
+      "-y",               // перезаписать если есть
+      "-i", inputPath,    // входной файл
+      "-c:a", "aac",      // кодек aac — универсальный
+      "-b:a", "64k",      // битрейт 64kbps достаточно для голоса
+      "-vn",              // без видео
+      "-movflags", "+faststart", // duration в начале файла — сразу виден таймер
+      outputPath
+    ], (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 app.post(
   "/api/chats/:id/voice",
   authMiddleware,
   audioUpload.single("audio"),
-  (req, res) => {
+  async (req, res) => {
     const chatId = Number(req.params.id);
 
     const member = get(
@@ -884,21 +905,27 @@ app.post(
     if (!member) return res.status(403).json({ error: "Forbidden" });
     if (!req.file) return res.status(400).json({ error: "No file" });
 
+    const originalPath = req.file.path;
+    const mp4Filename = req.file.filename.replace(/\.[^.]+$/, ".mp4");
+    const mp4Path = path.join(UPLOADS_DIR, mp4Filename);
+
+    let finalFilename = mp4Filename;
+
+    try {
+      await convertToMp4(originalPath, mp4Path);
+      fs.unlink(originalPath, () => {}); // удаляем оригинал
+    } catch (e) {
+      console.error("ffmpeg conversion failed, using original:", e.message);
+      finalFilename = req.file.filename; // фолбэк — оставляем как есть
+    }
+
     const r = run(
       `INSERT INTO messages (chat_id,sender_id,content,message_type,audio_path)
        VALUES (?,?,?,?,?)`,
-      [
-        chatId,
-        req.user.id,
-        encrypt("voice"),
-        "voice",
-        req.file.filename,
-      ]
+      [chatId, req.user.id, encrypt("voice"), "voice", finalFilename]
     );
 
-    const msg = get("SELECT * FROM messages WHERE id=?", [
-      r.lastInsertRowid,
-    ]);
+    const msg = get("SELECT * FROM messages WHERE id=?", [r.lastInsertRowid]);
 
     io.to(`chat:${chatId}`).emit("message:new", decryptMessage(msg));
 
